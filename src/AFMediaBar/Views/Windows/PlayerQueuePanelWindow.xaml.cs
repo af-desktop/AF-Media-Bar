@@ -224,7 +224,14 @@ public partial class PlayerQueuePanelWindow : FluentWindow, IDisposable
             _viewModel.ReleaseArtwork(item);
     }
 
-    private void QueueItem_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e) => TryLoadArtwork(sender);
+    private void QueueItem_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        // Recycling 复用容器时不一定触发 Unloaded；先释放旧行，避免已滚出视口的封面继续挂在旧 ViewModel 上。
+        if (e.OldValue is PlayerQueueItemViewModel previous && !ReferenceEquals(previous, e.NewValue))
+            _viewModel.ReleaseArtwork(previous);
+
+        TryLoadArtwork(sender);
+    }
 
     /// <summary>封面从占位图切换到实际图片时淡入；关闭装饰动效时直接显示。</summary>
     private void QueueArtworkImage_TargetUpdated(object? sender, DataTransferEventArgs e)

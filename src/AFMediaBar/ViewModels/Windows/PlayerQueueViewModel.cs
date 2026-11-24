@@ -405,6 +405,11 @@ public partial class PlayerQueueViewModel : ObservableObject, IDisposable
             return;
 
         Deactivate();
+        foreach (var item in Items)
+            ReleaseArtwork(item);
+        Items = Array.Empty<PlayerQueueItemViewModel>();
+        CurrentItem = null;
+        SelectedItem = null;
         _lifetime?.Dispose();
         _lifetime = null;
     }
