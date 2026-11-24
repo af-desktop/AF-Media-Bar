@@ -34,7 +34,7 @@ public sealed class NonsCoverThumbnailService : IDisposable
         _httpClient = httpClient;
     }
 
-    /// <summary>取一个已冻结的 40px 缩略图；同一曲目共用缓存和进行中的请求。</summary>
+    /// <summary>取一个已冻结的 32px 缩略图；同一曲目共用缓存和进行中的请求。</summary>
     public Task<BitmapSource?> LoadAsync(PlayerCompanionTrack track, CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _disposed) || string.IsNullOrWhiteSpace(track.CoverUrl))
@@ -123,6 +123,8 @@ public sealed class NonsCoverThumbnailService : IDisposable
             image.DecodePixelWidth = DecodePixelWidth;
             image.StreamSource = stream;
             image.EndInit();
+            // OnLoad 已经完成解码；清掉 StreamSource，避免 WPF 继续持有整段封面字节（每张可达数百 KB）。
+            image.StreamSource = null;
             image.Freeze();
             return image;
         }
