@@ -5,10 +5,10 @@ using System.Windows.Threading;
 using AFMediaBar.Classes.Abstractions;
 using AFMediaBar.Classes.Models;
 using AFMediaBar.Classes.Services;
+using AFMediaBar.Classes.Services.Media.Smtc;
 using AFMediaBar.Classes.Services.Media.Sources.NetEase;
 using AFMediaBar.Classes.Settings;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using static WindowsMediaController.MediaManager;
 
 namespace AFMediaBar.Layout.Tests;
 
@@ -158,7 +158,7 @@ public sealed class MediaSnapshotDeliveryTests
             Set(service, "_sessionSnapshot", old);
             Set(service, "_lastSnapshot", old);
             Set(service, "<CurrentSnapshot>k__BackingField", old);
-            Set(service, "_lastSessions", Array.Empty<MediaSession>());
+            Set(service, "_lastSessions", Array.Empty<SmtcSession>());
             Set(service, "_smtcCandidates", Array.Empty<MediaSourceCandidate>());
             Set(service, "_candidates", candidates);
             Set(service, "_lastSessionOptions", Array.Empty<MediaSessionOption>());

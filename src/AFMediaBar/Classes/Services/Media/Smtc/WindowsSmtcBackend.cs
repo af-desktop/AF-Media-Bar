@@ -87,7 +87,14 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
                 continue;
 
             if (_sessions.TryGetValue(id, out var existing))
-                existing.Session = raw;
+            {
+                if (!ReferenceEquals(existing.Session, raw))
+                {
+                    existing.Detach();
+                    existing.Session = raw;
+                    existing.Attach();
+                }
+            }
             else
             {
                 var registration = new SessionRegistration(id, raw, Raise);

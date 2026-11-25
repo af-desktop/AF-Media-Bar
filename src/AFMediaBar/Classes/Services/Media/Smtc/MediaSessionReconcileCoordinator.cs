@@ -158,7 +158,7 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
             ? TimeSpan.Zero
             : Stopwatch.GetElapsedTime(_lastCatalogRestartTimestamp);
         var token = _reconcileCancellation.Token;
-        _reconcileTask = Task.Run(() => ReconcileInBackground(generation, failures, catalogRestarts, sinceLastCatalogRestart, token));
+        _reconcileTask = Task.Run(() => ReconcileInBackgroundAsync(generation, failures, catalogRestarts, sinceLastCatalogRestart, token));
     }
 
     /// <summary>
@@ -169,7 +169,7 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
     /// occupy the UI thread. Only the publication is marshalled back; cancellation, disposal, or a changed generation discard stale
     /// results. The library call itself cannot be cancelled — cancellation only guarantees nothing stale is published.
     /// </summary>
-    private void ReconcileInBackground(int generation, int consecutiveFailures, int consecutiveCatalogRestarts, TimeSpan sinceLastCatalogRestart, CancellationToken token)
+    private async Task ReconcileInBackgroundAsync(int generation, int consecutiveFailures, int consecutiveCatalogRestarts, TimeSpan sinceLastCatalogRestart, CancellationToken token)
     {
         var started = Stopwatch.GetTimestamp();
         var osSessionCount = -1;
@@ -181,15 +181,15 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
                 return;
             }
 
-            osSessionCount = _catalog.GetOsSessionCount();
+            osSessionCount = await _catalog.GetOsSessionCountAsync(token).ConfigureAwait(false);
             action = MediaSessionReconcilePolicy.DecideAction(osSessionCount, consecutiveFailures, consecutiveCatalogRestarts, sinceLastCatalogRestart);
             if (action == MediaSessionReconcileAction.RestartCatalog)
             {
-                _catalog.Restart();
+                await _catalog.RestartAsync(token).ConfigureAwait(false);
             }
             else if (action == MediaSessionReconcileAction.ForceUpdate)
             {
-                _catalog.ForceUpdate();
+                await _catalog.ForceUpdateAsync(token).ConfigureAwait(false);
             }
         }
         catch (Exception ex)

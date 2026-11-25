@@ -23,7 +23,6 @@ public static class OpenSourceLicenseCatalog
     public static IReadOnlyList<LicenseEntry> Packages { get; } =
     [
         new("CommunityToolkit.Mvvm", "8.4.0", "MIT", "https://github.com/CommunityToolkit/dotnet"),
-        new("Dubya.WindowsMediaController", "2.5.6", "MIT", "https://github.com/DubyaDude/WindowsMediaController"),
         new("F23.StringSimilarity", "7.0.1", "MIT", "https://github.com/feature23/StringSimilarity.NET"),
         new("Lyricify.Lyrics.Helper", "0.2.0", "Apache-2.0", "https://github.com/WXRIW/Lyricify-Lyrics-Helper"),
         new("MicaWPF", "7.1.0", "MIT", "https://github.com/Simnico99/MicaWPF"),

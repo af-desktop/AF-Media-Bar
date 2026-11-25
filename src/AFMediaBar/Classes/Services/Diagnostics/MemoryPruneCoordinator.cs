@@ -2,8 +2,6 @@ using AFMediaBar.Classes.Services.Media.Smtc;
 using System.Diagnostics;
 using System.Windows.Threading;
 using AFMediaBar.Classes.Abstractions;
-using Windows.Media.Control;
-using static WindowsMediaController.MediaManager;
 
 namespace AFMediaBar.Classes.Services;
 
@@ -133,9 +131,7 @@ public sealed class MemoryPruneCoordinator : IDisposable
         _timer.Start();
 
         _power.StateChanged += OnPowerStateChanged;
-        _catalog.AnySessionOpened += OnAnySessionOpened;
-        _catalog.AnySessionClosed += OnAnySessionClosed;
-        _catalog.AnyPlaybackStateChanged += OnAnyPlaybackStateChanged;
+        _catalog.StateChanged += OnCatalogStateChanged;
 
         // 起始时间点定为启动时刻：程序刚起来时用户一定刚操作过，"无媒体"的计时从这一刻起算才对。
         // The clock starts at startup: the user has just interacted with something, so counting media idleness from this moment is the honest choice.
@@ -301,9 +297,7 @@ public sealed class MemoryPruneCoordinator : IDisposable
         }
 
         _power.StateChanged -= OnPowerStateChanged;
-        _catalog.AnySessionOpened -= OnAnySessionOpened;
-        _catalog.AnySessionClosed -= OnAnySessionClosed;
-        _catalog.AnyPlaybackStateChanged -= OnAnyPlaybackStateChanged;
+        _catalog.StateChanged -= OnCatalogStateChanged;
     }
 
     private void Apply(MemoryPruneLevel level, MemoryPruneSignals signals)
@@ -484,27 +478,10 @@ public sealed class MemoryPruneCoordinator : IDisposable
 
         foreach (var session in sessions)
         {
-            if (!MediaSessionGuard.IsUsable(session))
-            {
-                continue;
-            }
-
-            try
-            {
-                using var lease = _catalog.TryAcquireSession(session);
-                if (lease is null) continue;
-                if (session.ControlSession.GetPlaybackInfo().PlaybackStatus ==
-                    GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
-                {
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                // 会话在读取过程中关闭是正常竞态，忽略即可；只有其他异常值得记一笔。
-                // A session closing mid-read is a normal race and is ignored; anything else is worth a line.
-                _log?.Warn("Prune", $"读取播放状态失败: {ex.Message}");
-            }
+            if (!session.IsOpen) continue;
+            // 播放状态尚未读到的新会话按“有媒体”处理，避免启动后立即把缓存误剪。
+            if (!session.IsPlaybackKnown) return true;
+            if (session.IsPlaying) return true;
         }
 
         return false;
@@ -552,13 +529,7 @@ public sealed class MemoryPruneCoordinator : IDisposable
 
     private void OnPowerStateChanged(object? sender, EventArgs e) => Evaluate();
 
-    private void OnAnySessionOpened(MediaSession session) => RequestMediaEvaluation();
-
-    private void OnAnySessionClosed(MediaSession session) => RequestMediaEvaluation();
-
-    private void OnAnyPlaybackStateChanged(
-        MediaSession session,
-        GlobalSystemMediaTransportControlsSessionPlaybackInfo playbackInfo) => RequestMediaEvaluation();
+    private void OnCatalogStateChanged(SmtcCatalogState state) => RequestMediaEvaluation();
 
     /// <summary>
     /// 请求一次由媒体事件触发的评估。播放状态变化可能很密集，因此先合并：同一时刻只排一次回调，之后的请求直接丢弃。

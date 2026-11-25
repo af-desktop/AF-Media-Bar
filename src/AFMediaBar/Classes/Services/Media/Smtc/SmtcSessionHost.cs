@@ -179,7 +179,7 @@ internal sealed class SmtcSessionHost : IDisposable
     private async Task<T> RunAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _isStopped) != 0)
-            return await Task.FromCanceled<T>(cancellationToken);
+            return await Task.FromCanceled<T>(new CancellationToken(canceled: true));
 
         var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
         try
