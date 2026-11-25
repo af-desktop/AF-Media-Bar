@@ -1,4 +1,4 @@
-<!-- owner: AF Media Bar maintainers | verified_at: c7b33e4c | review_by: 2027-03-05 -->
+<!-- owner: AF Media Bar maintainers | verified_at: 0500b601 | review_by: 2027-03-05 -->
 
 # 媒体与歌词
 
