@@ -83,6 +83,33 @@ public sealed class SmtcSessionHostTests
         Assert.AreEqual(generation + 1, host.State.Generation);
     }
 
+    [TestMethod]
+    public async Task StartFailureLeavesHostFailedAndRestartRecovers()
+    {
+        var backend = new FakeBackend { StartFailure = new InvalidOperationException("start failed") };
+        using var host = new SmtcSessionHost(backend);
+
+        await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => host.StartAsync(default));
+        Assert.AreEqual(SmtcHostStatus.Failed, host.State.Status);
+
+        backend.StartFailure = null;
+        await host.RestartAsync(default);
+        Assert.AreEqual(SmtcHostStatus.Ready, host.State.Status);
+    }
+
+    [TestMethod]
+    public async Task DisposeStopsHostAndRejectsLaterReads()
+    {
+        var backend = new FakeBackend();
+        var host = new SmtcSessionHost(backend);
+        await host.StartAsync(default);
+
+        host.Dispose();
+
+        Assert.AreEqual(SmtcHostStatus.Stopped, host.State.Status);
+        await Assert.ThrowsExceptionAsync<TaskCanceledException>(() => host.ReadAsync("chrome", SmtcReadScope.Media, default));
+    }
+
     private sealed class FakeBackend : ISmtcBackend
     {
         private readonly object _sync = new();
@@ -94,11 +121,13 @@ public sealed class SmtcSessionHostTests
 
         public List<SmtcBackendSession> Sessions { get; } = [new("chrome", "chrome")];
         public bool BlockReads { get; set; }
+        public Exception? StartFailure { get; set; }
         public int MaximumConcurrentCalls { get; private set; }
         public HashSet<int> CallingThreads { get; } = [];
         public Task ReadStarted => _readStarted.Task;
 
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StartAsync(CancellationToken cancellationToken) =>
+            StartFailure is null ? Task.CompletedTask : Task.FromException(StartFailure);
 
         public Task StopAsync() => Task.CompletedTask;
 

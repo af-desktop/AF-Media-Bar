@@ -131,6 +131,7 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
     {
         for (var attempt = 0; attempt < 3; attempt++)
         {
+            if (_isDisposed) return;
             try
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_snapshotBuildCancellation.Token);
@@ -139,6 +140,10 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
                 return;
             }
             catch (OperationCanceledException) when (_snapshotBuildCancellation.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (ObjectDisposedException)
             {
                 return;
             }
@@ -152,6 +157,10 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
                 await Task.Delay(TimeSpan.FromSeconds(5), _snapshotBuildCancellation.Token);
             }
             catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (ObjectDisposedException)
             {
                 return;
             }

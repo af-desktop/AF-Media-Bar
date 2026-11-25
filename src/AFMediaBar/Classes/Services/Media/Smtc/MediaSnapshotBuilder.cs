@@ -1,6 +1,4 @@
 // Converts SMTC sessions and owns their enrichment caches; lyrics retrieval is delegated to LyricsService.
-using System.IO;
-using System.Runtime.InteropServices;
 using System.Windows.Media;
 using AFMediaBar.Classes.Abstractions;
 using AFMediaBar.Classes.Models;

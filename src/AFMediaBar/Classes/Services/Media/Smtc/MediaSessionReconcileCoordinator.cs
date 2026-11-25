@@ -80,6 +80,7 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
         _pendingReconcileStatus = null;
     }
     private (int OsSessionCount, TimeSpan Elapsed)? _pendingReconcileStatus;
+    private MediaSessionReconcileAction _lastReconcileAction;
 
     /// <summary>
     /// 自动重连看门狗：SMTC 目录只在 WinRT 事件触发时才同步，换歌瞬间丢一次事件就会永久失明。
@@ -183,12 +184,16 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
 
             osSessionCount = await _catalog.GetOsSessionCountAsync(token).ConfigureAwait(false);
             action = MediaSessionReconcilePolicy.DecideAction(osSessionCount, consecutiveFailures, consecutiveCatalogRestarts, sinceLastCatalogRestart);
-            // 启动失败时 osSessionCount 通常为 -1，策略不会选择重建；这里补上恢复路径。
-            if (_catalog.IsFailed && action != MediaSessionReconcileAction.RestartCatalog)
+            // 启动失败时 osSessionCount 通常为 -1，策略不会选择重建；这里补上恢复路径，但仍遵守重建冷却。
+            var canRestart = consecutiveCatalogRestarts < MediaSessionReconcilePolicy.CatalogRestartLimit ||
+                             sinceLastCatalogRestart >= MediaSessionReconcilePolicy.CatalogRestartCooldown;
+            if (_catalog.IsFailed && action != MediaSessionReconcileAction.RestartCatalog && canRestart)
                 action = MediaSessionReconcileAction.RestartCatalog;
             if (action == MediaSessionReconcileAction.RestartCatalog)
             {
-                await _catalog.RestartAsync(token).ConfigureAwait(false);
+                using var restartDeadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+                restartDeadline.CancelAfter(TimeSpan.FromSeconds(10));
+                await _catalog.RestartAsync(restartDeadline.Token).ConfigureAwait(false);
             }
             else if (action == MediaSessionReconcileAction.ForceUpdate)
             {
@@ -244,6 +249,7 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
             return;
         }
 
+        _lastReconcileAction = action;
         if (action == MediaSessionReconcileAction.RestartCatalog)
         {
             var afterCooldown = _consecutiveCatalogRestarts >= MediaSessionReconcilePolicy.CatalogRestartLimit;
@@ -304,8 +310,12 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
         else
         {
             _consecutiveFailedReconciles = 0;
-            _consecutiveCatalogRestarts = 0;
-            _lastCatalogRestartTimestamp = 0;
+            // 启动失败的重建虽然 osSessionCount 为负，也必须保留重建计数/时间，否则会绕过冷却形成 1 秒重启循环。
+            if (_lastReconcileAction != MediaSessionReconcileAction.RestartCatalog)
+            {
+                _consecutiveCatalogRestarts = 0;
+                _lastCatalogRestartTimestamp = 0;
+            }
         }
 
         // 慢调用统计覆盖"探测到恢复"的整段耗时（含系统查询）；恢复正常耗时就清零，因此退避不会累积成永久性的慢节奏。

@@ -45,7 +45,10 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
         }
 
         foreach (var session in _sessions.Values.ToArray())
-            session.Detach();
+        {
+            try { session.Detach(); }
+            catch (Exception) { }
+        }
         _sessions.Clear();
         _manager = null;
         _sessionsChanged = null;
@@ -247,8 +250,10 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
 
     public void ReleaseSession(string sessionId)
     {
-        if (_sessions.Remove(sessionId, out var registration))
-            registration.Detach();
+        if (!_sessions.Remove(sessionId, out var registration))
+            return;
+        try { registration.Detach(); }
+        catch (Exception) { }
     }
 
     private static SmtcBackendPlayback ReadPlayback(GlobalSystemMediaTransportControlsSession session)

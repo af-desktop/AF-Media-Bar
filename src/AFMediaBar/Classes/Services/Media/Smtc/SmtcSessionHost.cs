@@ -171,9 +171,16 @@ internal sealed class SmtcSessionHost : IDisposable
 
         try
         {
-            // 收尾必须留在宿主线程；超时后不再从调用线程碰 _sessions 或强行关 Dispatcher。
+            // 收尾必须留在宿主线程；超时后交给后台续体补做关停，调用线程不再碰 _sessions。
             if (!done.Task.Wait(TimeSpan.FromSeconds(2)))
+            {
+                _ = done.Task.ContinueWith(_ =>
+                {
+                    try { _dispatcher.BeginInvokeShutdown(DispatcherPriority.Send); } catch (Exception) { }
+                    try { _thread.Join(TimeSpan.FromSeconds(2)); } catch (Exception) { }
+                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 return;
+            }
         }
         catch (Exception)
         {
@@ -209,7 +216,7 @@ internal sealed class SmtcSessionHost : IDisposable
             completion.TrySetException(exception);
         }
 
-        return await completion.Task;
+        return await completion.Task.WaitAsync(cancellationToken);
     }
 
     private async Task RunAsync(Func<Task> action, CancellationToken cancellationToken)
@@ -325,8 +332,7 @@ internal sealed class SmtcSessionHost : IDisposable
                 {
                     if (initial.Playback.IsClosed)
                     {
-                        session.MarkClosed();
-                        _sessions.Remove(item.Id);
+                        RemoveSession(item.Id);
                         continue;
                     }
                     session.ApplyPlayback(initial.Playback);
@@ -355,7 +361,8 @@ internal sealed class SmtcSessionHost : IDisposable
 
     private void RemoveSession(string sessionId)
     {
-        _backend.ReleaseSession(sessionId);
+        try { _backend.ReleaseSession(sessionId); }
+        catch (Exception) { }
         if (_sessions.Remove(sessionId, out var session))
             session.MarkClosed();
         Publish();
