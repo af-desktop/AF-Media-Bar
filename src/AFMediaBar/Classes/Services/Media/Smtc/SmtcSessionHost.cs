@@ -116,9 +116,9 @@ internal sealed class SmtcSessionHost : IDisposable
             if (!_sessions.TryGetValue(sessionId, out var session) || !session.IsOpen)
                 return null;
             var read = await _backend.ReadAsync(sessionId, scope, cancellationToken);
-            if (read is null)
+            if (read is null || read.Playback.IsClosed)
             {
-                session.MarkPlaybackUnknown();
+                RemoveSession(sessionId);
                 return null;
             }
 
@@ -285,8 +285,12 @@ internal sealed class SmtcSessionHost : IDisposable
         {
             if (!_sessions.TryGetValue(id, out var session)) continue;
             var read = await _backend.ReadAsync(id, SmtcReadScope.Playback, CancellationToken.None);
-            if (read is null) session.MarkPlaybackUnknown();
-            else session.ApplyPlayback(read.Playback);
+            if (read is null || read.Playback.IsClosed)
+            {
+                RemoveSession(id);
+                continue;
+            }
+            session.ApplyPlayback(read.Playback);
             Publish();
         }
         if (metadataDirty) Publish();
@@ -325,6 +329,13 @@ internal sealed class SmtcSessionHost : IDisposable
             session.MarkClosed();
         _sessions.Clear();
         _focusedSessionId = null;
+        Publish();
+    }
+
+    private void RemoveSession(string sessionId)
+    {
+        if (_sessions.Remove(sessionId, out var session))
+            session.MarkClosed();
         Publish();
     }
 

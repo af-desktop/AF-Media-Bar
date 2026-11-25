@@ -248,7 +248,8 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
             controls?.IsPlaybackPositionEnabled ?? false,
             controls?.IsRepeatEnabled ?? false,
             playback.AutoRepeatMode ?? MediaPlaybackAutoRepeatMode.None,
-            playback.PlaybackRate is > 0 ? playback.PlaybackRate.Value : 1);
+            playback.PlaybackRate is > 0 ? playback.PlaybackRate.Value : 1,
+            playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed);
     }
 
     private static SmtcBackendTimeline ReadTimeline(GlobalSystemMediaTransportControlsSession session)
@@ -334,4 +335,3 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
         }
     }
 }
-

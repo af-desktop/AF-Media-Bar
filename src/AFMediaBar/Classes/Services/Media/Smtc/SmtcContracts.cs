@@ -38,7 +38,8 @@ internal sealed record SmtcBackendPlayback(
     bool CanSeek,
     bool CanRepeat,
     MediaPlaybackAutoRepeatMode RepeatMode,
-    double PlaybackRate);
+    double PlaybackRate,
+    bool IsClosed = false);
 
 /// <summary>后端读取的媒体元数据。/ Media metadata read by the backend.</summary>
 internal sealed record SmtcBackendMedia(string Title, string Artist, string Album, bool IsVideo);
@@ -83,4 +84,3 @@ internal interface ISmtcBackend
     Task<int> GetOsSessionCountAsync(CancellationToken cancellationToken);
     Task<string?> GetFocusedSessionIdAsync(CancellationToken cancellationToken);
 }
-
