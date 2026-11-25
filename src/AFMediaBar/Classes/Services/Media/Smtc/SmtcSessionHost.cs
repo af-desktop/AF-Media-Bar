@@ -216,6 +216,9 @@ internal sealed class SmtcSessionHost : IDisposable
             completion.TrySetException(exception);
         }
 
+        _ = completion.Task.ContinueWith(static task => _ = task.Exception,
+            CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
         return await completion.Task.WaitAsync(cancellationToken);
     }
 

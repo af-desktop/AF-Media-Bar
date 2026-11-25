@@ -65,7 +65,7 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
     {
         if (_isDisposed || _isSnapshotBuilding() || _pendingReconcileStatus is not { } status) return;
         _pendingReconcileStatus = null;
-        FinalizeReconcileStatus(status.OsSessionCount, status.Elapsed);
+        FinalizeReconcileStatus(status.OsSessionCount, status.Elapsed, status.Action);
     }
 
     public void Dispose()
@@ -79,8 +79,7 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
         _reconcileGeneration++;
         _pendingReconcileStatus = null;
     }
-    private (int OsSessionCount, TimeSpan Elapsed)? _pendingReconcileStatus;
-    private MediaSessionReconcileAction _lastReconcileAction;
+    private (int OsSessionCount, TimeSpan Elapsed, MediaSessionReconcileAction Action)? _pendingReconcileStatus;
 
     /// <summary>
     /// 自动重连看门狗：SMTC 目录只在 WinRT 事件触发时才同步，换歌瞬间丢一次事件就会永久失明。
@@ -249,7 +248,6 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
             return;
         }
 
-        _lastReconcileAction = action;
         if (action == MediaSessionReconcileAction.RestartCatalog)
         {
             var afterCooldown = _consecutiveCatalogRestarts >= MediaSessionReconcilePolicy.CatalogRestartLimit;
@@ -262,7 +260,7 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
             // of rebuilding the catalog every few seconds (this looped forever while a fullscreen game blocked the OS query).
             AppLogService.Current?.Info(
                 "Media",
-                $"[看门狗] 系统有会话但目录读不到，已重建媒体目录（{(afterCooldown ? "冷却后重试" : $"快速重试 {_consecutiveCatalogRestarts}/{MediaSessionReconcilePolicy.CatalogRestartLimit}")}）");
+                $"[看门狗] {((osSessionCount > 0) ? "系统有会话但目录读不到" : "启动/重建失败")}，已重建媒体目录（{(afterCooldown ? "冷却后重试" : $"快速重试 {_consecutiveCatalogRestarts}/{MediaSessionReconcilePolicy.CatalogRestartLimit}")}）");
         }
 
         try
@@ -279,14 +277,14 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
         // spuriously escalate to a catalog restart while the recovered session is still being read.
         if (_isSnapshotBuilding())
         {
-            _pendingReconcileStatus = (osSessionCount, elapsed);
+            _pendingReconcileStatus = (osSessionCount, elapsed, action);
             return;
         }
 
-        FinalizeReconcileStatus(osSessionCount, elapsed);
+        FinalizeReconcileStatus(osSessionCount, elapsed, action);
     }
 
-    private void FinalizeReconcileStatus(int osSessionCount, TimeSpan elapsed)
+    private void FinalizeReconcileStatus(int osSessionCount, TimeSpan elapsed, MediaSessionReconcileAction action)
     {
         if (_isConnected())
         {
@@ -311,7 +309,7 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
         {
             _consecutiveFailedReconciles = 0;
             // 启动失败的重建虽然 osSessionCount 为负，也必须保留重建计数/时间，否则会绕过冷却形成 1 秒重启循环。
-            if (_lastReconcileAction != MediaSessionReconcileAction.RestartCatalog)
+            if (action != MediaSessionReconcileAction.RestartCatalog && !_catalog.IsFailed)
             {
                 _consecutiveCatalogRestarts = 0;
                 _lastCatalogRestartTimestamp = 0;
