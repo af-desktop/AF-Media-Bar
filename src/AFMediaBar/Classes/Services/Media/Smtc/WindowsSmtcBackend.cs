@@ -26,7 +26,7 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         if (_started) return;
-        _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+        _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         _sessionsChanged = (_, _) => Raise(new SmtcBackendEvent(SmtcBackendEventKind.SessionsDirty, null));
         _currentSessionChanged = (_, _) => Raise(new SmtcBackendEvent(SmtcBackendEventKind.FocusedDirty, null));
@@ -121,6 +121,20 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
         var session = registration.Session;
         try
         {
+            // 先读播放状态：会话关闭时直接返回 Closed，避免媒体属性读取先失败而被误判为暂时不可用。
+            var playback = scope.HasFlag(SmtcReadScope.Playback)
+                ? ReadPlayback(session)
+                : new SmtcBackendPlayback(false, false, false, false, false, false, false, MediaPlaybackAutoRepeatMode.None, 1);
+
+            if (playback.IsClosed)
+            {
+                return new SmtcBackendRead(
+                    new SmtcBackendMedia(string.Empty, string.Empty, string.Empty, false),
+                    playback,
+                    new SmtcBackendTimeline(TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, DateTimeOffset.MinValue),
+                    null);
+            }
+
             SmtcBackendMedia media = new(string.Empty, string.Empty, string.Empty, false);
             GlobalSystemMediaTransportControlsSessionMediaProperties? properties = null;
             if (scope.HasFlag(SmtcReadScope.Media) || scope.HasFlag(SmtcReadScope.Artwork))
@@ -136,16 +150,9 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
                     properties.PlaybackType == MediaPlaybackType.Video);
             }
 
-            var playback = scope.HasFlag(SmtcReadScope.Playback)
-                ? ReadPlayback(session)
-                : new SmtcBackendPlayback(false, false, false, false, false, false, false, MediaPlaybackAutoRepeatMode.None, 1);
-
             var timeline = scope.HasFlag(SmtcReadScope.Timeline)
                 ? ReadTimeline(session)
                 : new SmtcBackendTimeline(TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, DateTimeOffset.MinValue);
-
-            if (scope.HasFlag(SmtcReadScope.Playback) && !playback.IsKnown)
-                return null;
 
             byte[]? artwork = null;
             if (scope.HasFlag(SmtcReadScope.Artwork) && properties?.Thumbnail is { } thumbnail)
@@ -182,9 +189,12 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
                 case SmtcCommand.SkipNext:
                     return await session.TrySkipNextAsync();
                 case SmtcCommand.Seek when positionSeconds is { } seconds:
+                    var seekPlayback = session.GetPlaybackInfo();
+                    if (seekPlayback.Controls?.IsPlaybackPositionEnabled != true)
+                        return false;
                     var timeline = session.GetTimelineProperties();
                     var duration = Math.Max(0, (timeline.EndTime - timeline.StartTime).TotalSeconds);
-                    if (duration <= 0 || positionSeconds is null)
+                    if (duration <= 0)
                         return false;
                     var target = timeline.StartTime + TimeSpan.FromSeconds(Math.Clamp(seconds, 0, duration));
                     return await session.TryChangePlaybackPositionAsync(target.Ticks);
@@ -235,6 +245,12 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
         }
     }
 
+    public void ReleaseSession(string sessionId)
+    {
+        if (_sessions.Remove(sessionId, out var registration))
+            registration.Detach();
+    }
+
     private static SmtcBackendPlayback ReadPlayback(GlobalSystemMediaTransportControlsSession session)
     {
         var playback = session.GetPlaybackInfo();
@@ -249,7 +265,9 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
             controls?.IsRepeatEnabled ?? false,
             playback.AutoRepeatMode ?? MediaPlaybackAutoRepeatMode.None,
             playback.PlaybackRate is > 0 ? playback.PlaybackRate.Value : 1,
-            playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed);
+            playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed,
+            playback.PlaybackType == MediaPlaybackType.Video,
+            playback.AutoRepeatMode is not null);
     }
 
     private static SmtcBackendTimeline ReadTimeline(GlobalSystemMediaTransportControlsSession session)

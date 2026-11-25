@@ -6,7 +6,7 @@
 
 ## 来源与身份
 
-- SMTC 目录由 `SmtcSessionHost` 独占：宿主持有 manager/session 和全部 COM 调用，消费者只读不可变状态和普通读取结果，不持有 WinRT 对象。重建与退出由宿主串行释放，所有权边界内不调用用户事件。
+- SMTC 目录由 `SmtcSessionHost` 独占：宿主持有 manager/session 和全部 COM 调用，消费者只读不可变状态和普通读取结果，不持有 WinRT 对象。重建与退出由宿主串行释放；状态事件在宿主线程发布，订阅者只做调度，不得同步回调宿主。
 - `MediaSourceRegistry` 统一来源身份、别名、过滤和仲裁。`SourceId` 与 `SelectionKey` 在注册来源间唯一，既有值保持兼容；`Matches` 同时识别规范 ID 和别名，别名互不重叠。
 - 来源允许策略必须在选择、自动跟随、菜单、快照、媒体命令和提供器补充前统一执行；过滤用大小写不敏感的规范身份，不持久化临时会话标识。
 - SMTC 与独立来源并列。独立来源实现 `IIndependentMediaSourceProvider`，无 SMTC 时仍可被发现；Provider 负责轮询、读取、取消和释放，纯策略不持有外部资源。

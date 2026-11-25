@@ -17,7 +17,6 @@ internal sealed class SmtcSessionHost : IDisposable
     private readonly ConcurrentQueue<SmtcBackendEvent> _events = new();
     private readonly Dictionary<string, SmtcSession> _sessions = new(StringComparer.Ordinal);
     private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly TaskCompletionSource _stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private SmtcCatalogState _state = SmtcCatalogState.Initial;
     private string? _focusedSessionId;
     private int _generation;
@@ -95,15 +94,6 @@ internal sealed class SmtcSessionHost : IDisposable
         }
     }, cancellationToken);
 
-    internal Task<IReadOnlyList<SmtcBackendSession>> RefreshAsync(CancellationToken cancellationToken) =>
-        RunAsync(async () =>
-        {
-            await RefreshSessionsCoreAsync(cancellationToken);
-            return (IReadOnlyList<SmtcBackendSession>)State.Sessions
-                .Select(session => new SmtcBackendSession(session.Id, session.SourceAppId))
-                .ToArray();
-        }, cancellationToken);
-
     internal Task<int> GetOsSessionCountAsync(CancellationToken cancellationToken) =>
         RunAsync(() => _backend.GetOsSessionCountAsync(cancellationToken), cancellationToken);
 
@@ -116,7 +106,12 @@ internal sealed class SmtcSessionHost : IDisposable
             if (!_sessions.TryGetValue(sessionId, out var session) || !session.IsOpen)
                 return null;
             var read = await _backend.ReadAsync(sessionId, scope, cancellationToken);
-            if (read is null || read.Playback.IsClosed)
+            if (read is null)
+            {
+                session.MarkPlaybackUnknown();
+                return null;
+            }
+            if (read.Playback.IsClosed)
             {
                 RemoveSession(sessionId);
                 return null;
@@ -125,7 +120,8 @@ internal sealed class SmtcSessionHost : IDisposable
             if (scope.HasFlag(SmtcReadScope.Playback))
             {
                 session.ApplyPlayback(read.Playback);
-                Publish();
+                // 读取由快照构建/看门狗发起；不能在这里发布状态，否则 Service 的 revision 会
+                // 把本次构建判成过期，并在每次构建后再次排队，形成自反馈。
             }
 
             return read;
@@ -155,7 +151,13 @@ internal sealed class SmtcSessionHost : IDisposable
                 try
                 {
                     await _gate.WaitAsync();
-                    try { await _backend.StopAsync(); }
+                    try
+                    {
+                        await _backend.StopAsync();
+                        _backend.Changed -= OnBackendChanged;
+                        CloseAllSessions();
+                        SetStatus(SmtcHostStatus.Stopped);
+                    }
                     finally { _gate.Release(); }
                 }
                 catch (Exception) { }
@@ -167,13 +169,19 @@ internal sealed class SmtcSessionHost : IDisposable
             done.TrySetResult();
         }
 
-        try { done.Task.Wait(TimeSpan.FromSeconds(2)); } catch (Exception) { }
-        CloseAllSessions();
-        SetStatus(SmtcHostStatus.Stopped);
-        _backend.Changed -= OnBackendChanged;
+        try
+        {
+            // 收尾必须留在宿主线程；超时后不再从调用线程碰 _sessions 或强行关 Dispatcher。
+            if (!done.Task.Wait(TimeSpan.FromSeconds(2)))
+                return;
+        }
+        catch (Exception)
+        {
+            return;
+        }
+
         try { _dispatcher.BeginInvokeShutdown(DispatcherPriority.Send); } catch (Exception) { }
         try { _thread.Join(TimeSpan.FromSeconds(2)); } catch (Exception) { }
-        _stopped.TrySetResult();
     }
 
     private async Task<T> RunAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken)
@@ -268,7 +276,6 @@ internal sealed class SmtcSessionHost : IDisposable
                     break;
                 case SmtcBackendEventKind.MediaChanged:
                 case SmtcBackendEventKind.TimelineChanged:
-                case SmtcBackendEventKind.Closed:
                     metadataDirty = true;
                     break;
             }
@@ -285,7 +292,12 @@ internal sealed class SmtcSessionHost : IDisposable
         {
             if (!_sessions.TryGetValue(id, out var session)) continue;
             var read = await _backend.ReadAsync(id, SmtcReadScope.Playback, CancellationToken.None);
-            if (read is null || read.Playback.IsClosed)
+            if (read is null)
+            {
+                session.MarkPlaybackUnknown();
+                continue;
+            }
+            if (read.Playback.IsClosed)
             {
                 RemoveSession(id);
                 continue;
@@ -309,7 +321,16 @@ internal sealed class SmtcSessionHost : IDisposable
                 session = new SmtcSession(item.Id, item.SourceAppId);
                 _sessions[item.Id] = session;
                 var initial = await _backend.ReadAsync(item.Id, SmtcReadScope.Playback, cancellationToken);
-                if (initial is not null) session.ApplyPlayback(initial.Playback);
+                if (initial is not null)
+                {
+                    if (initial.Playback.IsClosed)
+                    {
+                        session.MarkClosed();
+                        _sessions.Remove(item.Id);
+                        continue;
+                    }
+                    session.ApplyPlayback(initial.Playback);
+                }
             }
         }
 
@@ -334,6 +355,7 @@ internal sealed class SmtcSessionHost : IDisposable
 
     private void RemoveSession(string sessionId)
     {
+        _backend.ReleaseSession(sessionId);
         if (_sessions.Remove(sessionId, out var session))
             session.MarkClosed();
         Publish();

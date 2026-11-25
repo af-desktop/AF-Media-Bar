@@ -25,11 +25,32 @@ public sealed class SmtcSessionHostTests
     }
 
     [TestMethod]
+    public async Task ReadDoesNotPublishState()
+    {
+        var backend = new FakeBackend();
+        using var host = new SmtcSessionHost(backend);
+        await host.StartAsync(default);
+        var changes = 0;
+        host.StateChanged += _ => Interlocked.Increment(ref changes);
+
+        await host.ReadAsync("chrome", SmtcReadScope.Playback, default);
+
+        Assert.AreEqual(0, changes, "读取是快照构建的一部分，不能反过来触发目录状态事件。");
+    }
+
+    [TestMethod]
     public async Task ClosingSessionDuringReadDropsItWithoutThrowing()
     {
         var backend = new FakeBackend();
         using var host = new SmtcSessionHost(backend);
         await host.StartAsync(default);
+
+        var empty = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        host.StateChanged += state =>
+        {
+            if (state.Sessions.Count == 0 && state.Status == SmtcHostStatus.Ready)
+                empty.TrySetResult(true);
+        };
 
         backend.BlockReads = true;
         var read = host.ReadAsync("chrome", SmtcReadScope.Media, default);
@@ -39,13 +60,6 @@ public sealed class SmtcSessionHostTests
         backend.ReleaseRead();
 
         await read;
-        var empty = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        host.StateChanged += state =>
-        {
-            if (state.Sessions.Count == 0 && state.Status == SmtcHostStatus.Ready)
-                empty.TrySetResult(true);
-        };
-
         await empty.Task.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.IsNull(host.Find("chrome"));
     }
@@ -126,6 +140,8 @@ public sealed class SmtcSessionHostTests
         public Task<int> GetOsSessionCountAsync(CancellationToken cancellationToken) => Task.FromResult(Sessions.Count);
 
         public Task<string?> GetFocusedSessionIdAsync(CancellationToken cancellationToken) => Task.FromResult<string?>("chrome");
+
+        public void ReleaseSession(string sessionId) { }
 
         public void Raise(SmtcBackendEvent value) => Changed?.Invoke(value);
 

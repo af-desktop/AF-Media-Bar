@@ -1,6 +1,4 @@
 // SMTC 目录门面：对外只发布不可变状态和普通读取结果，不暴露 WinRT/第三方会话对象。
-using AFMediaBar.Classes.Services.Media.Smtc;
-
 namespace AFMediaBar.Classes.Services.Media.Smtc;
 
 /// <summary>
@@ -29,13 +27,16 @@ public sealed class MediaSessionCatalog : IDisposable
     /// <summary>目录是否已就绪；未就绪时消费者使用上一份快照或断开状态。</summary>
     internal bool IsStarted => State.Status == SmtcHostStatus.Ready;
 
+    /// <summary>最近一次启动/重建是否失败；看门狗据此触发重建。</summary>
+    internal bool IsFailed => State.Status == SmtcHostStatus.Failed;
+
     /// <summary>宿主发布新状态；事件在宿主线程触发，订阅者自行切换到 UI。</summary>
     internal event Action<SmtcCatalogState>? StateChanged;
 
     /// <summary>启动 manager 并枚举已有会话。/ Starts the manager and enumerates existing sessions.</summary>
     internal Task StartAsync(CancellationToken cancellationToken) => _host.StartAsync(cancellationToken);
 
-    /// <summary>重建 manager；旧代读取结果会被宿主丢弃。</summary>
+    /// <summary>重建 manager；旧句柄标记关闭，调用方按当前会话校验丢弃迟到结果。</summary>
     internal Task RestartAsync(CancellationToken cancellationToken) => _host.RestartAsync(cancellationToken);
 
     /// <summary>重新枚举会话；用于事件丢失后的兜底。</summary>

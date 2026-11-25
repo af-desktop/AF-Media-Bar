@@ -68,7 +68,7 @@ public sealed class MemoryPruneCoordinator : IDisposable
     private DispatcherTimer? _timer;
     private DateTime _mediaActiveAtUtc = DateTime.UtcNow;
     private MemoryPruneLevel _level = MemoryPruneLevel.None;
-    private bool _evaluationScheduled;
+    private int _evaluationScheduled;
     private bool _started;
     private volatile bool _disposed;
 
@@ -538,23 +538,22 @@ public sealed class MemoryPruneCoordinator : IDisposable
     /// </summary>
     private void RequestMediaEvaluation()
     {
-        if (_disposed || _evaluationScheduled || _dispatcher is not { } dispatcher)
+        if (_disposed || _dispatcher is not { } dispatcher || Interlocked.Exchange(ref _evaluationScheduled, 1) != 0)
         {
             return;
         }
 
-        _evaluationScheduled = true;
         try
         {
             dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
             {
-                _evaluationScheduled = false;
+                Interlocked.Exchange(ref _evaluationScheduled, 0);
                 Evaluate();
             }));
         }
         catch (Exception ex)
         {
-            _evaluationScheduled = false;
+            Interlocked.Exchange(ref _evaluationScheduled, 0);
             _log?.Warn("Prune", $"投递媒体事件评估失败: {ex.Message}");
         }
     }

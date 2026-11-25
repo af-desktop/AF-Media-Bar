@@ -39,7 +39,9 @@ internal sealed record SmtcBackendPlayback(
     bool CanRepeat,
     MediaPlaybackAutoRepeatMode RepeatMode,
     double PlaybackRate,
-    bool IsClosed = false);
+    bool IsClosed = false,
+    bool IsVideo = false,
+    bool IsRepeatKnown = false);
 
 /// <summary>后端读取的媒体元数据。/ Media metadata read by the backend.</summary>
 internal sealed record SmtcBackendMedia(string Title, string Artist, string Album, bool IsVideo);
@@ -61,8 +63,7 @@ internal enum SmtcBackendEventKind
     FocusedDirty,
     PlaybackChanged,
     MediaChanged,
-    TimelineChanged,
-    Closed
+    TimelineChanged
 }
 
 /// <summary>后端事件；可从任意线程触发，宿主只投递，不在这里执行 COM。</summary>
@@ -83,4 +84,6 @@ internal interface ISmtcBackend
     Task<bool> ExecuteAsync(string sessionId, SmtcCommand command, double? positionSeconds, CancellationToken cancellationToken);
     Task<int> GetOsSessionCountAsync(CancellationToken cancellationToken);
     Task<string?> GetFocusedSessionIdAsync(CancellationToken cancellationToken);
+    /// <summary>会话关闭后立即退订并释放该会话的原生注册；只允许宿主线程调用。</summary>
+    void ReleaseSession(string sessionId);
 }

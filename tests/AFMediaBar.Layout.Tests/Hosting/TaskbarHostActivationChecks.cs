@@ -35,7 +35,7 @@ internal static class TaskbarHostActivationChecks
         using var monitor = new AudioMonitorService(deviceResolver, new SpectrumCaptureProcessResolver(new()));
         using var probe = new TaskbarOccupiedAreaProbe();
         using var builder = new MediaSnapshotBuilder(null!);
-        var catalog = new MediaSessionCatalog();
+        var catalog = new MediaSessionCatalog(new EmptySmtcBackend());
         using var media = new MediaSessionService(new MediaSourceRegistry([]), catalog,
             new MediaSessionSelectionService(catalog, new MediaSourceRegistry([])), builder, [], null!, prune, null!);
         using var updates = new UpdateService(null!, null!, null!, null!, null!);

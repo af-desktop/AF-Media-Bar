@@ -43,12 +43,76 @@ internal static class ArtworkLoader
     }
 
     /// <summary>
-    /// 同步加载并缓存 WinRT 缩略图，同时更新当前异步上下文的封面哈希。
-    /// Synchronously loads and caches a WinRT thumbnail while updating the current async context artwork hash.
+    /// 从已读取的封面字节加载并缓存缩略图；后台线程解码，返回冻结位图。
+    /// Loads and caches a thumbnail from bytes already read by the SMTC host; decoding stays off the UI thread.
     /// </summary>
-    /// <param name="thumbnail">缩略图流引用。/ Thumbnail stream reference.</param>
-    /// <param name="maxThumbnailSize">最大解码宽度。/ Maximum decoded width.</param>
-    /// <returns>冻结的 WPF 位图；输入无效、无法读取或解码时返回 null。</returns>
+    /// <param name="data">封面字节；为空或损坏时返回 null。</param>
+    /// <param name="maxThumbnailSize">最大解码宽度。</param>
+    internal static BitmapImage? GetThumbnail(byte[]? data, int maxThumbnailSize = MaxThumbnailSize)
+    {
+        if (data is not { Length: > 0 })
+            return null;
+
+        var hashCode = GetStableThumbnailHash(data);
+        if (hashCode == 0)
+            return null;
+
+        if (ThumbnailCache.TryGetValue(hashCode, out var cachedImage) && cachedImage != null)
+            return cachedImage;
+
+        BitmapImage image;
+        try
+        {
+            try
+            {
+                image = DecodeThumbnail(data, maxThumbnailSize, BitmapCreateOptions.None);
+            }
+            catch (IOException exception) when (exception.InnerException is COMException { HResult: unchecked((int)0x88982F72) })
+            {
+                image = DecodeThumbnail(data, maxThumbnailSize, BitmapCreateOptions.IgnoreColorProfile);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or COMException or NotSupportedException or FileFormatException)
+        {
+            return null;
+        }
+
+        ThumbnailCache.Set(hashCode, image);
+        return image;
+    }
+
+    private static int GetStableThumbnailHash(byte[] data)
+    {
+        try
+        {
+            using SHA256 sha256 = SHA256.Create();
+            return BitConverter.ToInt32(sha256.ComputeHash(data), 0);
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
+    private static BitmapImage DecodeThumbnail(byte[] data, int maxThumbnailSize, BitmapCreateOptions options)
+    {
+        using var stream = new MemoryStream(data, writable: false);
+        BitmapImage image = new();
+        image.BeginInit();
+        image.CacheOption = BitmapCacheOption.OnLoad;
+        image.CreateOptions = options;
+        image.DecodePixelWidth = maxThumbnailSize;
+        image.StreamSource = stream;
+        image.EndInit();
+        image.Freeze();
+        return image;
+    }
+
+
+    /// <summary>
+    /// 同步加载并缓存 WinRT 缩略图；仅保留给旧调用方，SMTC 主链路使用字节入口。
+    /// Synchronously loads and caches a WinRT thumbnail; kept for legacy callers, the SMTC path uses the bytes overload.
+    /// </summary>
     internal static BitmapImage? GetThumbnail(
         IRandomAccessStreamReference? thumbnail,
         int maxThumbnailSize = MaxThumbnailSize)

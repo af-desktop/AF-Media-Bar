@@ -202,9 +202,12 @@ public sealed class MediaSnapshotBuilder : IMemoryPrunable, IDisposable
         var artist = read.Media.Artist;
         var request = new LyricsRequest(title, artist, read.Media.Album, duration > 0 ? duration : null, null,
             PlaybackSourceId: sourceId);
-        var lyrics = GetLyrics(session.Id, sourceId, request, read.Media.IsVideo, read.Playback.IsPlaying,
-            deferUntilDurationSettles: true);
+        var lyrics = GetLyrics(session.Id, sourceId, request, read.Media.IsVideo || read.Playback.IsVideo,
+            read.Playback.IsPlaying, deferUntilDurationSettles: true);
         var searchingLyrics = lyrics is null && IsSearchingLyrics();
+        var artwork = read.Artwork is { Length: > 0 } bytes
+            ? await Task.Run(() => ArtworkLoader.GetThumbnail(bytes), cancellationToken)
+            : null;
 
         return new MediaSnapshot(
             true,
@@ -216,39 +219,18 @@ public sealed class MediaSnapshotBuilder : IMemoryPrunable, IDisposable
             artist,
             sourceId,
             MediaSourceNameFormatter.GetDisplayName(sourceId, UnknownSourceName),
-            DecodeArtwork(read.Artwork),
+            artwork,
             lyrics,
             position,
             duration,
             duration > 0 && read.Playback.CanSeek,
             read.Playback.CanRepeat,
-            MapRepeatMode(read.Playback.RepeatMode),
+            read.Playback.IsRepeatKnown ? MapRepeatMode(read.Playback.RepeatMode) : MediaRepeatMode.Unavailable,
             read.Playback.PlaybackRate,
             read.Timeline.LastUpdated)
         {
             IsSearchingLyrics = searchingLyrics
         };
-    }
-
-    private static System.Windows.Media.Imaging.BitmapImage? DecodeArtwork(byte[]? bytes)
-    {
-        if (bytes is not { Length: > 0 })
-            return null;
-        try
-        {
-            using var stream = new MemoryStream(bytes, writable: false);
-            var image = new System.Windows.Media.Imaging.BitmapImage();
-            image.BeginInit();
-            image.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
-            image.StreamSource = stream;
-            image.EndInit();
-            image.Freeze();
-            return image;
-        }
-        catch (Exception)
-        {
-            return null;
-        }
     }
 
     private static MediaRepeatMode MapRepeatMode(MediaPlaybackAutoRepeatMode mode) => mode switch

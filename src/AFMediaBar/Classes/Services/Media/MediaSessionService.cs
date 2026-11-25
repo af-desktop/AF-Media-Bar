@@ -129,14 +129,32 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
 
     private async Task StartCatalogAsync()
     {
-        try
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            await _catalog.StartAsync(_snapshotBuildCancellation.Token);
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception exception)
-        {
-            _log?.Warn("Media", "SMTC 目录启动失败，等待看门狗重试", exception);
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_snapshotBuildCancellation.Token);
+                timeout.CancelAfter(TimeSpan.FromSeconds(10));
+                await _catalog.StartAsync(timeout.Token);
+                return;
+            }
+            catch (OperationCanceledException) when (_snapshotBuildCancellation.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                _log?.Warn("Media", $"SMTC 目录启动失败（第 {attempt + 1} 次），稍后重试", exception);
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5), _snapshotBuildCancellation.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
         }
     }
 
@@ -301,10 +319,14 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
     private void OnCatalogStateChanged(SmtcCatalogState state)
     {
         if (_isDisposed) return;
-        // 事件在宿主线程触发；只做计数/调度，UI 状态仍由 ScheduleRefresh 在 Dispatcher 上更新。
+        // 事件在宿主线程触发；只做计数，把状态写入和看门狗武装投递回 UI。
         Interlocked.Increment(ref _mediaRevision);
-        _reconcile.Arm();
-        ScheduleSessionsRefresh();
+        _dispatcher.BeginInvoke(() =>
+        {
+            if (_isDisposed) return;
+            _reconcile.Arm();
+            ScheduleSessionsRefresh();
+        }, DispatcherPriority.Normal);
     }
 
     private void OnSelectionRefreshRequested() => ScheduleSessionsRefresh();
@@ -540,6 +562,11 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
                 Publish(snapshot);
                 (_readFailures ??= new()).Recover(_log, "Media", "build", "媒体快照构建已恢复");
                 TryRequestFallbackLyrics();
+            }
+            else
+            {
+                // 读取失败/会话已消失时不能继续保留 connected 的旧帧，否则看门狗会失去探测条件。
+                Publish(MediaSnapshot.Disconnected);
             }
         }
         catch (OperationCanceledException) when (_isDisposed)

@@ -1,4 +1,4 @@
-﻿// 在隔离进程验证设置页资源加载、写入边界与异步清理；不启动真实播放器或音频服务。
+// 在隔离进程验证设置页资源加载、写入边界与异步清理；不启动真实播放器或音频服务。
 using System.Text.RegularExpressions;
 using System.Diagnostics;
 using System.ComponentModel;
@@ -435,7 +435,7 @@ public sealed class SettingsVisualRuntimeTests
         var previous = SettingsManager.Current;
         using var builder = new MediaSnapshotBuilder(null!);
         var registry = new MediaSourceRegistry([]);
-        var catalog = new MediaSessionCatalog();
+        var catalog = new MediaSessionCatalog(new EmptySmtcBackend());
         using var selection = new MediaSessionSelectionService(catalog, registry);
         using var media = new MediaSessionService(registry, catalog, selection, builder, [], null!,
             new MemoryPruneCoordinator(null!, null!, null!, []), null!);
@@ -467,7 +467,7 @@ public sealed class SettingsVisualRuntimeTests
         {
             using var builder = new MediaSnapshotBuilder(null!);
             var registry = new MediaSourceRegistry([]);
-            var catalog = new MediaSessionCatalog();
+            var catalog = new MediaSessionCatalog(new EmptySmtcBackend());
             using var selection = new MediaSessionSelectionService(catalog, registry);
             using var media = new MediaSessionService(registry, catalog, selection, builder, [], null!,
                 new MemoryPruneCoordinator(null!, null!, null!, []), null!);
