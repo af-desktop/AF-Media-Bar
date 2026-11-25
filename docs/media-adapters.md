@@ -7,7 +7,7 @@
 | 位置（相对 `src/AFMediaBar/Classes/`） | 职责 |
 | --- | --- |
 | `Services/Media/` | 通用来源目录、选择、过滤、激活与协调；协调者可调用 SMTC 通道实现 |
-| `Services/Media/Smtc/` | SMTC 会话目录、有效性检查、快照转换、重连策略及目录资源租约 |
+| `Services/Media/Smtc/` | SMTC 串行宿主、后端契约、会话快照转换、重连策略与事件合并 |
 | `Services/Media/Readers/` | 共享的进程身份、PE 构建指纹、只读模式扫描与读取诊断；不持有具体播放器布局 |
 | `Services/Media/Sources/Shared/` | 跨来源共享的 SMTC 优先合并状态、短暂失败缓冲和读取日志入口 |
 | `Services/Media/Sources/<来源>/` | 一个播放器的 Provider、身份和合并策略、内存读取器、构建表、私有元数据解析、连续性处理 |
