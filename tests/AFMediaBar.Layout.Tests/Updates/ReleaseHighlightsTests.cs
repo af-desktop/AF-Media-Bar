@@ -110,7 +110,14 @@ public sealed class ReleaseHighlightsTests
             Catalogue("1.0.0").Replace("1.0.0", "not-a-version")
         })
             Assert.ThrowsException<FormatException>(() => ReleaseHighlightsPolicy.Parse(json));
+        Assert.IsTrue(ReleaseHighlightsPolicy.IsSafeNotesUrl("https://github.com/Fervent-Tempo/AF-Media-Bar/releases/tag/v1.8.0"));
+        Assert.IsTrue(ReleaseHighlightsPolicy.IsSafeNotesUrl("https://github.com/Fervent-Tempo/AF-Desktop/releases/tag/v2.0.0"));
         Assert.IsFalse(ReleaseHighlightsPolicy.IsSafeNotesUrl("https://github.com.evil.test/Fervent-Tempo/AF-Media-Bar/releases/tag/v1"));
+        Assert.IsFalse(ReleaseHighlightsPolicy.IsSafeNotesUrl("https://github.com.evil.test/Fervent-Tempo/AF-Desktop/releases/tag/v2"));
+        CollectionAssert.Contains(UpdateSourcePlanPolicy.ManifestEndpoints.ToArray(),
+            "https://raw.githubusercontent.com/Fervent-Tempo/AF-Desktop/release-metadata/release/latest.json");
+        CollectionAssert.Contains(UpdateSourcePlanPolicy.ManifestEndpoints.ToArray(),
+            "https://cdn.jsdelivr.net/gh/Fervent-Tempo/AF-Desktop@release-metadata/release/latest.json");
     }
 
     [TestMethod]
@@ -219,7 +226,7 @@ public sealed class ReleaseHighlightsTests
             var failed = await reader.LoadAsync(true, CancellationToken.None);
             Assert.AreEqual(initial.Releases.Count, failed.Releases.Count);
             Assert.IsNotNull(failed.FailureKey);
-            Assert.AreEqual(2, handler.Calls);
+            Assert.AreEqual(4, handler.Calls);
         }
         finally { Directory.Delete(directory, true); }
     }

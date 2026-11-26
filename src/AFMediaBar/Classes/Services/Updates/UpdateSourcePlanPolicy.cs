@@ -16,18 +16,22 @@ namespace AFMediaBar.Classes.Services.Updates;
 public static class UpdateSourcePlanPolicy
 {
     /// <summary>
-    /// 清单端点，按顺序尝试：raw 优先，jsDelivr 备用。
+    /// 清单端点，按顺序尝试：原仓库名与更名后的 <c>AF-Desktop</c> 均保留 raw 优先、jsDelivr 备用。
     ///
-    /// jsDelivr 会把分支文件缓存最长 12 小时，因此它只能作为备用：刚发布的版本通过它可能延迟出现。
-    /// Manifest endpoints, tried in order: raw first, jsDelivr as the fallback.
+    /// jsDelivr 会把分支文件缓存最长 12 小时，且仓库更名后旧仓名的 jsDelivr 地址可能不跟随重定向，
+    /// 因此提前写入新仓名作为回退。
+    /// Manifest endpoints, tried in order: raw first and jsDelivr as fallback for both the current repository name
+    /// and the renamed <c>AF-Desktop</c> repository.
     ///
-    /// jsDelivr caches branch files for up to 12 hours, so it is a fallback only: a freshly published version can
-    /// appear there with a delay.
+    /// jsDelivr caches branch files for up to 12 hours and may not follow GitHub repository renames on the old
+    /// slug, so the renamed repository endpoints are included ahead of time as fallbacks.
     /// </summary>
     public static IReadOnlyList<string> ManifestEndpoints { get; } =
     [
         "https://raw.githubusercontent.com/Fervent-Tempo/AF-Media-Bar/release-metadata/release/latest.json",
-        "https://cdn.jsdelivr.net/gh/Fervent-Tempo/AF-Media-Bar@release-metadata/release/latest.json"
+        "https://cdn.jsdelivr.net/gh/Fervent-Tempo/AF-Media-Bar@release-metadata/release/latest.json",
+        "https://raw.githubusercontent.com/Fervent-Tempo/AF-Desktop/release-metadata/release/latest.json",
+        "https://cdn.jsdelivr.net/gh/Fervent-Tempo/AF-Desktop@release-metadata/release/latest.json"
     ];
 
     /// <summary>清单不可用时的兜底人工下载页。/ Fallback manual download page used when no manifest is available.</summary>
