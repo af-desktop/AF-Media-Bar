@@ -61,8 +61,8 @@ public sealed class ReleaseHighlightsService : IDisposable
             {
                 "https://raw.githubusercontent.com/Fervent-Tempo/AF-Media-Bar/release-metadata/release/highlights.json",
                 "https://cdn.jsdelivr.net/gh/Fervent-Tempo/AF-Media-Bar@release-metadata/release/highlights.json",
-                "https://raw.githubusercontent.com/Fervent-Tempo/AF-Desktop/release-metadata/release/highlights.json",
-                "https://cdn.jsdelivr.net/gh/Fervent-Tempo/AF-Desktop@release-metadata/release/highlights.json"
+                "https://raw.githubusercontent.com/af-desktop/AF-Desktop/release-metadata/release/highlights.json",
+                "https://cdn.jsdelivr.net/gh/af-desktop/AF-Desktop@release-metadata/release/highlights.json"
             } : new[] { overridden.Trim() };
             foreach (var endpoint in endpoints)
             {

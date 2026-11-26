@@ -30,8 +30,8 @@ public static class UpdateSourcePlanPolicy
     [
         "https://raw.githubusercontent.com/Fervent-Tempo/AF-Media-Bar/release-metadata/release/latest.json",
         "https://cdn.jsdelivr.net/gh/Fervent-Tempo/AF-Media-Bar@release-metadata/release/latest.json",
-        "https://raw.githubusercontent.com/Fervent-Tempo/AF-Desktop/release-metadata/release/latest.json",
-        "https://cdn.jsdelivr.net/gh/Fervent-Tempo/AF-Desktop@release-metadata/release/latest.json"
+        "https://raw.githubusercontent.com/af-desktop/AF-Desktop/release-metadata/release/latest.json",
+        "https://cdn.jsdelivr.net/gh/af-desktop/AF-Desktop@release-metadata/release/latest.json"
     ];
 
     /// <summary>清单不可用时的兜底人工下载页。/ Fallback manual download page used when no manifest is available.</summary>

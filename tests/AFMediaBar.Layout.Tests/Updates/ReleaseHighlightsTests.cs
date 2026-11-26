@@ -111,13 +111,14 @@ public sealed class ReleaseHighlightsTests
         })
             Assert.ThrowsException<FormatException>(() => ReleaseHighlightsPolicy.Parse(json));
         Assert.IsTrue(ReleaseHighlightsPolicy.IsSafeNotesUrl("https://github.com/Fervent-Tempo/AF-Media-Bar/releases/tag/v1.8.0"));
-        Assert.IsTrue(ReleaseHighlightsPolicy.IsSafeNotesUrl("https://github.com/Fervent-Tempo/AF-Desktop/releases/tag/v2.0.0"));
+        Assert.IsTrue(ReleaseHighlightsPolicy.IsSafeNotesUrl("https://github.com/af-desktop/AF-Media-Bar/releases/tag/v1.8.0"));
+        Assert.IsTrue(ReleaseHighlightsPolicy.IsSafeNotesUrl("https://github.com/af-desktop/AF-Desktop/releases/tag/v2.0.0"));
         Assert.IsFalse(ReleaseHighlightsPolicy.IsSafeNotesUrl("https://github.com.evil.test/Fervent-Tempo/AF-Media-Bar/releases/tag/v1"));
-        Assert.IsFalse(ReleaseHighlightsPolicy.IsSafeNotesUrl("https://github.com.evil.test/Fervent-Tempo/AF-Desktop/releases/tag/v2"));
+        Assert.IsFalse(ReleaseHighlightsPolicy.IsSafeNotesUrl("https://github.com.evil.test/af-desktop/AF-Desktop/releases/tag/v2"));
         CollectionAssert.Contains(UpdateSourcePlanPolicy.ManifestEndpoints.ToArray(),
-            "https://raw.githubusercontent.com/Fervent-Tempo/AF-Desktop/release-metadata/release/latest.json");
+            "https://raw.githubusercontent.com/af-desktop/AF-Desktop/release-metadata/release/latest.json");
         CollectionAssert.Contains(UpdateSourcePlanPolicy.ManifestEndpoints.ToArray(),
-            "https://cdn.jsdelivr.net/gh/Fervent-Tempo/AF-Desktop@release-metadata/release/latest.json");
+            "https://cdn.jsdelivr.net/gh/af-desktop/AF-Desktop@release-metadata/release/latest.json");
     }
 
     [TestMethod]
