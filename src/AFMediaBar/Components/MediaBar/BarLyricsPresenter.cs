@@ -131,9 +131,14 @@ public partial class TaskBarMediaControl
             _owner.Dispatcher.BeginInvoke(() =>
             {
                 Interlocked.Exchange(ref _lyricsConversionRefreshQueued, 0);
-                // 通知不携带旧曲目或文本，恢复时按最新快照与转换方向重新投影。
-                if (_lyricsHostLoaded)
-                    OnWebLyricsSettingsChanged(null, EventArgs.Empty);
+                // 后台繁简转换就绪属于当前行文本异步补全，原地静默替换，不再触发同一句第二次整行滚动。
+                if (!_lyricsHostLoaded)
+                    return;
+                var projected = LyricsPresentationProjector.Project(_owner._snapshot, _owner.PresentationSettings, DateTimeOffset.UtcNow);
+                if (VisibleContentChanged(_lyricsFrame, projected))
+                    UpdateWebLyricsPresentation(allowTransition: false);
+                else
+                    ApplyWebLyricsLifetime();
             });
         }
 
@@ -481,14 +486,14 @@ public partial class TaskBarMediaControl
         /// highlighting is in play at all. The progress value itself never counts, or every frame would look changed.
         /// Settings changes use it to decide whether anything has to be re-sent, and a re-send rolls like a line change.
         /// </summary>
-        private static bool VisibleContentChanged(LyricsPresentationFrame previous, LyricsPresentationFrame next) =>
+        internal static bool VisibleContentChanged(LyricsPresentationFrame previous, LyricsPresentationFrame next) =>
             previous.IsVisible != next.IsVisible ||
             previous.TranslationMode != next.TranslationMode ||
             (previous.WordScanProgress is null) != (next.WordScanProgress is null) ||
             !string.Equals(previous.Current, next.Current, StringComparison.Ordinal) ||
-            !string.Equals(previous.Next, next.Next, StringComparison.Ordinal) ||
-            !string.Equals(previous.CurrentTranslation, next.CurrentTranslation, StringComparison.Ordinal) ||
-            !string.Equals(previous.NextTranslation, next.NextTranslation, StringComparison.Ordinal);
+            (next.TranslationMode
+                ? !string.Equals(previous.CurrentTranslation, next.CurrentTranslation, StringComparison.Ordinal)
+                : !string.Equals(previous.Next, next.Next, StringComparison.Ordinal));
 
         internal void RefreshWebLyricsTimer()
         {

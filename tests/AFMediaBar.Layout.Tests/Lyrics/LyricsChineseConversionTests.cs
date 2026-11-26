@@ -148,6 +148,25 @@ public sealed class LyricsChineseConversionTests
         Assert.AreEqual("Never Gonna Give You Up", latinOnly.Current);
     }
 
+    [TestMethod]
+    public async Task UpcomingLinesArePrefetchedDuringProjection()
+    {
+        var snapshot = Snapshot([
+            new LyricLine(0, 10, "心より大事なものを") { Translation = "想要找到比心" },
+            new LyricLine(10, 20, "見つけたかった") { Translation = "更为重要的东西" },
+            new LyricLine(20, 30, "言葉って薄情だ") { Translation = "言语本就薄情" }
+        ], position: 2);
+
+        _ = ProjectWith(snapshot, LyricsChineseConversionMode.SimplifiedToTraditional, LyricsSecondaryLineMode.Translation);
+        await LyricsChineseConverter.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
+        var thirdLine = ProjectWith(
+            Snapshot(snapshot.Lyrics!.Document.Lines, position: 22),
+            LyricsChineseConversionMode.SimplifiedToTraditional,
+            LyricsSecondaryLineMode.Translation);
+        Assert.AreEqual("言語本就薄情", thirdLine.CurrentTranslation);
+    }
+
     private static LyricsPresentationFrame ProjectWith(
         MediaSnapshot snapshot,
         LyricsChineseConversionMode conversion,

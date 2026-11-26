@@ -116,6 +116,10 @@ public static class LyricsPresentationProjector
         // CSS and does not index characters, so a changed character count cannot misalign it.
         var conversion = settings.LyricsChineseConversion;
         var stripBracketSymbols = settings.LyricsBracketSymbolsHidden;
+        if (conversion != LyricsChineseConversionMode.None)
+        {
+            PrefetchUpcomingConversions(lines, index, settings, stripBracketSymbols, conversion);
+        }
 
         return new LyricsPresentationFrame(
             true,
@@ -151,6 +155,29 @@ public static class LyricsPresentationProjector
     /// </summary>
     private static string Present(string text, bool stripBracketSymbols, LyricsChineseConversionMode conversion) =>
         LyricsChineseConverter.Convert(stripBracketSymbols ? LyricsTranslationFormatFilter.Clean(text) : text, conversion);
+
+    /// <summary>
+    /// 后台预热后续数行的繁简转换，让歌词滚入屏幕前即命中缓存，减少先出原文再替换的闪烁。
+    /// </summary>
+    private static void PrefetchUpcomingConversions(
+        IReadOnlyList<LyricLine> lines,
+        int currentIndex,
+        AppSettings settings,
+        bool stripBracketSymbols,
+        LyricsChineseConversionMode conversion)
+    {
+        const int lookahead = 4;
+        var lastIndex = Math.Min(lines.Count - 1, currentIndex + lookahead);
+        for (var i = currentIndex + 1; i <= lastIndex; i++)
+        {
+            var upcoming = DisplayLine(lines[i], settings);
+            _ = LyricsChineseConverter.Convert(upcoming.Text, conversion);
+            if (!string.IsNullOrEmpty(upcoming.Translation))
+            {
+                _ = Present(upcoming.Translation, stripBracketSymbols, conversion);
+            }
+        }
+    }
 
     private static double ResolveLineProgress(LyricLine line, double position)
     {
