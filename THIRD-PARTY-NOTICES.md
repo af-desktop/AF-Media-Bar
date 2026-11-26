@@ -47,6 +47,20 @@ The MIT License (MIT)
 
 Copyright (c) 2015
 
+## Device battery protocols
+
+The HID battery protocol implementations are adapted from
+[Voltide](https://github.com/sdparklab/Voltide/tree/73f16fd2be44570c0a861cef6b4804d743656893)
+(including ATK contributions by yiwluoq) and
+[InphicBatteryTray](https://github.com/Tan-TanZi/InphicBatteryTray/tree/86c8cd08eaae74966799a840e9a8d45ca1a6cd37).
+The IN9 protocol is credited upstream to MRXie-zf/InphicBatteryTray-IN9.
+Transport lifetime, identity handling and UI integration were implemented for AF Media Bar.
+
+MIT License
+
+Copyright (c) 2026 Joko
+Copyright (c) 2026 Tan-TanZi
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights

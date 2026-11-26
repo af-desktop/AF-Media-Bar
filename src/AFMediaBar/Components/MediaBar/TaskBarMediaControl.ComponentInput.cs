@@ -41,7 +41,7 @@ public partial class TaskBarMediaControl
     private Point _componentPress;
     private bool _componentVertical;
     private DpiScale _componentDpi;
-    private readonly Dictionary<TaskbarRestComponent, Rect> _componentStartBounds = new();
+    private readonly Dictionary<ComponentKey, Rect> _componentStartBounds = new();
     private IReadOnlyList<ComponentLayoutEntry>? _componentPreview;
     private IInputElement? _componentPreviousFocus;
     public ICommand? ComponentReorderCommand { get; set; }
@@ -50,7 +50,7 @@ public partial class TaskBarMediaControl
     internal event MouseEventHandler? BarDragHandleMoved;
     internal event MouseButtonEventHandler? BarDragHandleReleased;
 
-    private Dictionary<TaskbarRestComponent, FrameworkElement> HoverElements() => new()
+    private Dictionary<ComponentKey, FrameworkElement> HoverElements() => new()
     {
         [TaskbarRestComponent.PreviousTrack] = TaskbarPreviousButton,
         [TaskbarRestComponent.PlayPause] = TaskbarPlayPauseButton,
@@ -60,9 +60,9 @@ public partial class TaskBarMediaControl
         [TaskbarRestComponent.Volume] = TaskbarVolumeButton,
         [TaskbarRestComponent.Queue] = TaskbarQueueHoverButton
     };
-    private Dictionary<TaskbarRestComponent, FrameworkElement> RestElements()
+    private Dictionary<ComponentKey, FrameworkElement> RestElements()
     {
-        var elements = new Dictionary<TaskbarRestComponent, FrameworkElement>
+        var elements = new Dictionary<ComponentKey, FrameworkElement>
         {
             [TaskbarRestComponent.Spectrum] = TaskbarSpectrumHoverSurface,
             [TaskbarRestComponent.BluetoothBattery] = TaskbarBatterySurface,
@@ -75,6 +75,7 @@ public partial class TaskBarMediaControl
         };
         foreach (var surface in _metricSurfaces.Values)
             if (surface.Tag is TaskbarRestComponent component && surface.Visibility == Visibility.Visible) elements[component] = surface;
+        foreach (var pair in _batterySurfaces) elements[pair.Key] = pair.Value;
         return elements;
     }
 
@@ -173,6 +174,7 @@ public partial class TaskBarMediaControl
         // Any changed setting can affect the source layer, its geometry or available commands.
         CancelComponentGesture();
         RefreshBarMoveHandle();
+        if (args.PropertyName == nameof(AppSettings.BluetoothBatteryWidget)) BatteryChanged(sender, EventArgs.Empty);
     }
     private void ComponentBarEntered(object sender, MouseEventArgs args) => RefreshBarMoveHandle();
     private void ComponentBarLeft(object sender, MouseEventArgs args)
@@ -184,6 +186,7 @@ public partial class TaskBarMediaControl
     {
         if (!IsVisible) { CancelComponentGesture(); ResetBarMoveHandle(); }
         else RefreshBarMoveHandle();
+        ConfigureBattery();
     }
     private void ComponentSizeChanged(object sender, SizeChangedEventArgs args) { if (HasComponentGesture) CancelComponentGesture(); }
     private void ComponentUnloaded(object sender, RoutedEventArgs args) { CancelComponentGesture(); ResetBarMoveHandle(); }
@@ -398,7 +401,7 @@ public partial class TaskBarMediaControl
         var entries = _componentPreview is not null && _componentGesture?.State == BarLayoutState.Hover
             ? _componentPreview : ComponentLayoutPolicy.Resolve(PresentationSettings, BarLayoutState.Hover);
         var elements = HoverElements();
-        var desired = entries.Select(entry => elements[entry.Component]).ToArray();
+        var desired = entries.Select(entry => elements[entry.Key]).ToArray();
         if (!TaskbarHoverActions.Children.Cast<FrameworkElement>().SequenceEqual(desired))
         {
             TaskbarTransportButtons.Children.Clear();
@@ -408,7 +411,7 @@ public partial class TaskBarMediaControl
         var visibleIndex = 0;
         foreach (var entry in entries)
         {
-            var element = elements[entry.Component];
+            var element = elements[entry.Key];
             var available = entry.Component != TaskbarRestComponent.Queue || _queueAvailable;
             element.Visibility = entry.IsVisible && available ? Visibility.Visible : Visibility.Collapsed;
             if (entry.IsVisible && available)
@@ -428,7 +431,7 @@ public partial class TaskBarMediaControl
     }
     private static DependencyObject? ParentOf(DependencyObject node) => node is Visual or System.Windows.Media.Media3D.Visual3D
         ? VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node);
-    private (TaskbarRestComponent Component, BarLayoutState State)? HitComponent(DependencyObject? source)
+    private (ComponentKey Key, BarLayoutState State)? HitComponent(DependencyObject? source)
     {
         var hover = HoverElements();
         var rest = RestElements();
@@ -445,10 +448,10 @@ public partial class TaskBarMediaControl
         CancelComponentGesture();
         _suppressComponentRelease = false;
         var hit = HitComponent(args.OriginalSource as DependencyObject);
-        if (hit is not { } source || !ComponentLayoutPolicy.CanMove(source.Component)) return;
+        if (hit is not { } source || !ComponentLayoutPolicy.CanMove(source.Key.Component)) return;
         var entries = ComponentLayoutPolicy.Resolve(PresentationSettings, source.State).Select(entry => entry with { }).ToArray();
-        if (!entries.Any(entry => entry.Component == source.Component && entry.IsVisible)) return;
-        _componentGesture = new(source.State, source.Component, Array.FindIndex(entries, entry => entry.Component == source.Component), entries);
+        if (!entries.Any(entry => entry.Key == source.Key && entry.IsVisible)) return;
+        _componentGesture = new(source.State, source.Key, Array.FindIndex(entries, entry => entry.Key == source.Key), entries);
         _componentPress = args.GetPosition(this);
         _componentVertical = _isVertical;
         _componentDpi = VisualTreeHelper.GetDpi(this);
@@ -483,17 +486,17 @@ public partial class TaskBarMediaControl
         if (!IsValidComponentDrop(position)) { CancelComponentGesture(); args.Handled = true; return; }
         var primary = _isVertical ? position.Y : position.X;
         var reversed = !_isVertical && gesture.State != BarLayoutState.Hover && ResolvedTaskbarArrangement == TaskbarContentArrangement.Right;
-        var candidates = gesture.OriginalEntries.Where(entry => entry.IsVisible && ComponentLayoutPolicy.CanMove(entry.Component) && _componentStartBounds.ContainsKey(entry.Component)).ToArray();
+        var candidates = gesture.OriginalEntries.Where(entry => entry.IsVisible && ComponentLayoutPolicy.CanMove(entry.Component) && _componentStartBounds.ContainsKey(entry.Key)).ToArray();
         if (candidates.Length == 0) { CancelComponentGesture(); return; }
         var target = candidates.OrderBy(entry =>
         {
-            var rect = _componentStartBounds[entry.Component];
+            var rect = _componentStartBounds[entry.Key];
             return Math.Abs(primary - (_isVertical ? rect.Top + rect.Height / 2 : rect.Left + rect.Width / 2));
-        }).First().Component;
-        var targetIndex = gesture.OriginalEntries.ToList().FindIndex(entry => entry.Component == target);
+        }).First().Key;
+        var targetIndex = gesture.OriginalEntries.ToList().FindIndex(entry => entry.Key == target);
         _componentGesture = gesture with { TargetIndex = targetIndex };
         var preview = gesture.OriginalEntries.ToList();
-        var sourceIndex = preview.FindIndex(entry => entry.Component == gesture.Component);
+        var sourceIndex = preview.FindIndex(entry => entry.Key == gesture.Key);
         var source = preview[sourceIndex]; preview.RemoveAt(sourceIndex); preview.Insert(targetIndex, source);
         _componentPreview = preview;
         ApplyComponentPreview();
@@ -546,7 +549,7 @@ public partial class TaskBarMediaControl
         }
         CancelComponentGesture();
         _suppressComponentRelease = false;
-        if (valid && hit?.Component == gesture.Component && (ComponentLayoutPolicy.IsMetric(gesture.Component) || gesture.Component == TaskbarRestComponent.Performance) &&
+        if (valid && hit?.Key == gesture.Key && (ComponentLayoutPolicy.IsMetric(gesture.Component) || gesture.Component == TaskbarRestComponent.Performance) &&
             PresentationSettings.PerformanceComponent.OpenTaskManagerOnClick)
         { args.Handled = true; RequestOpenTaskManager(); }
     }
@@ -571,6 +574,7 @@ public partial class TaskBarMediaControl
         if (_componentInsertionMarker is not null) _componentInsertionMarker.Visibility = Visibility.Collapsed;
         if (wasActive)
         {
+            _batteryPressedSurface = null;
             if (Mouse.Captured == this) Mouse.Capture(null);
             if (wasHover) { ApplyHoverComponentLayout(); if (_isVertical) ConfigureVerticalHoverGeometry(); }
             else if (_isVertical) ApplyVerticalSectionGeometry(MainBorder.Height);

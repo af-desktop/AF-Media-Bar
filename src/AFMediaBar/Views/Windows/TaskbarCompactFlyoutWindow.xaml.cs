@@ -9,6 +9,7 @@ using AFMediaBar.Classes.Models;
 using AFMediaBar.Classes.Settings;
 using AFMediaBar.Classes.Services;
 using AFMediaBar.Resources;
+using AFMediaBar.ViewModels.Windows;
 using Wpf.Ui.Controls;
 using Button = System.Windows.Controls.Button;
 
@@ -26,6 +27,7 @@ public partial class TaskbarCompactFlyoutWindow : FluentWindow, IDisposable
     private bool _allowClose;
     private int _animationVersion;
     private readonly AnchoredWindowPresentation _windowPresentation;
+    private DeviceBatteryOverviewViewModel? _batteryOverview;
     internal int RequestVersion { get; private set; }
 
     internal bool IsCurrentRequest(int version) => !_allowClose && !_isHiding && IsVisible && version == RequestVersion;
@@ -41,12 +43,28 @@ public partial class TaskbarCompactFlyoutWindow : FluentWindow, IDisposable
     {
         InitializeComponent();
         _windowPresentation = new(this);
-        IsVisibleChanged += (_, _) => { if (!IsVisible) RequestVersion++; };
+        SizeChanged += OnFlyoutSizeChanged;
+        IsVisibleChanged += (_, _) => { if (!IsVisible) { RequestVersion++; ReleaseBatteryOverview(); } };
         appearanceService.Attach(this);
     }
 
     /// <summary>判断指定内容当前是否可见。 / Determines whether the requested content is currently visible.</summary>
     public bool IsShowing(TaskbarCompactFlyoutMode mode) => !_isHiding && IsVisible && _mode == mode;
+
+    public void ShowBatteryOverview(DeviceBatteryOverviewViewModel viewModel, TrayIconBounds anchor)
+    {
+        if (_allowClose) return;
+        _batteryOverview = viewModel;
+        BatteryPanel.DataContext = viewModel;
+        Width = 320;
+        ShowMode(TaskbarCompactFlyoutMode.Battery, anchor);
+    }
+    private void ReleaseBatteryOverview()
+    {
+        _batteryOverview?.Deactivate();
+        _batteryOverview = null;
+        BatteryPanel.DataContext = null;
+    }
 
     /// <summary>按内容宽度显示快速启动列表。 / Shows the quick-launch list sized to its content.</summary>
     public void ShowQuickLaunch(IReadOnlyList<QuickLaunchEntry> entries, TrayIconBounds anchor)
@@ -198,6 +216,13 @@ public partial class TaskbarCompactFlyoutWindow : FluentWindow, IDisposable
     private void RepositionVisibleMenu()
     { if (!_allowClose && IsVisible && _anchor is { } anchor) { UpdateLayout(); TryPositionNear(anchor); } }
 
+    private void OnFlyoutSizeChanged(object sender, SizeChangedEventArgs args)
+    {
+        // 异步列表改变 SizeToContent 后，重新用实际窗口尺寸贴靠，避免向屏幕外增长。
+        if (_isPositioning || _isHiding || _windowPresentation.IsPreparing || !IsVisible) return;
+        RepositionVisibleMenu();
+    }
+
     /// <summary>更新滚轮预览的媒体音量。 / Updates the wheel-previewed media volume.</summary>
     public void SetVolumePreview(int volume)
     {
@@ -229,6 +254,9 @@ public partial class TaskbarCompactFlyoutWindow : FluentWindow, IDisposable
         RequestVersion++;
         _animationVersion++;
         _mode = mode;
+        if (mode == TaskbarCompactFlyoutMode.Battery) _batteryOverview?.Activate();
+        else ReleaseBatteryOverview();
+        BatteryPanel.Visibility = mode == TaskbarCompactFlyoutMode.Battery ? Visibility.Visible : Visibility.Collapsed;
         QuickLaunchPanel.Visibility = mode == TaskbarCompactFlyoutMode.QuickLaunch ? Visibility.Visible : Visibility.Collapsed;
         OutputDevicePanel.Visibility = mode is TaskbarCompactFlyoutMode.OutputDevice or TaskbarCompactFlyoutMode.InputDevice ? Visibility.Visible : Visibility.Collapsed;
         VolumePanel.Visibility = mode == TaskbarCompactFlyoutMode.Volume ? Visibility.Visible : Visibility.Collapsed;
@@ -245,11 +273,12 @@ public partial class TaskbarCompactFlyoutWindow : FluentWindow, IDisposable
             if (!await _windowPresentation.ShowAsync(AnchoredWindowPresentation.GetPhysicalAnchor(anchor), () =>
             {
                 if (!TryPositionNear(anchor)) throw new InvalidOperationException("无法定位紧凑菜单。");
-            })) return;
+            })) { ReleaseBatteryOverview(); return; }
         }
         catch (Exception exception)
         {
             System.Diagnostics.Debug.WriteLine($"[CompactFlyout] Presentation failed: {exception}");
+            ReleaseBatteryOverview();
             return;
         }
         if (ShowActivated) Activate();
@@ -274,6 +303,11 @@ public partial class TaskbarCompactFlyoutWindow : FluentWindow, IDisposable
             MaxHeight = Math.Min(440, Math.Max(0, (info.rcWork.Bottom - info.rcWork.Top) / scale - 16));
             MaxWidth = Math.Max(1, (info.rcWork.Right - info.rcWork.Left) / scale);
             UpdateLayout();
+            if (_mode == TaskbarCompactFlyoutMode.Battery)
+            {
+                BatteryList.MaxHeight = Math.Max(0, Math.Min(156, MaxHeight - 90));
+                UpdateLayout();
+            }
             if (_mode is TaskbarCompactFlyoutMode.OutputDevice or TaskbarCompactFlyoutMode.InputDevice)
             {
                 var reserved = 30 + DeviceHeaderPanel.ActualHeight + DeviceHeaderPanel.Margin.Bottom +
@@ -371,6 +405,7 @@ public partial class TaskbarCompactFlyoutWindow : FluentWindow, IDisposable
     private void BeginHideAnimation()
     {
         if (_isHiding || !IsVisible) return;
+        ReleaseBatteryOverview();
         RequestVersion++;
         _isHiding = true;
         if (_windowPresentation.IsPreparing)
@@ -411,6 +446,8 @@ public partial class TaskbarCompactFlyoutWindow : FluentWindow, IDisposable
     {
         if (_allowClose) return;
         _allowClose = true;
+        SizeChanged -= OnFlyoutSizeChanged;
+        ReleaseBatteryOverview();
         RequestVersion++;
         _windowPresentation.Dispose();
         _animationVersion++;
@@ -432,5 +469,6 @@ public enum TaskbarCompactFlyoutMode
     QuickLaunch,
     OutputDevice,
     Volume,
-    InputDevice
+    InputDevice,
+    Battery
 }

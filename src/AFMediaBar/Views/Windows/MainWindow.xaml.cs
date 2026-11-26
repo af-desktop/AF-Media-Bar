@@ -103,6 +103,7 @@ namespace AFMediaBar.Views.Windows
         private readonly AFMenuWindow _trayMenuWindow;
         private readonly AFMenuWindow _memoryMenuWindow;
         private readonly AFMenuWindow _batteryMenuWindow;
+        private readonly DeviceBatteryOverviewViewModel _batteryOverview;
         private AFMediaBar.Components.AFContextMenu _trayMenu = null!;
 
         private readonly QuickLaunchService _quickLaunch;
@@ -142,9 +143,13 @@ namespace AFMediaBar.Views.Windows
             Func<string, DisplayMonitorInfo, FloatingBarWindow> floatingFactory,
             MediaSessionService mediaSessionService,
             AFMediaBar.ViewModels.Components.AFContextMenuViewModel menuViewModel,
-            QuickLaunchService quickLaunch)
+            QuickLaunchService quickLaunch,
+            DeviceBatteryOverviewViewModel batteryOverview)
         {
             _settingsHost = settingsWindowHost;
+            _batteryOverview = batteryOverview;
+            _batteryOverview.OpenRequested += OpenBatteryOverviewFromSettings;
+            _batteryOverview.SettingsRequested += OpenBatterySettings;
             _quickLaunch = quickLaunch;
             ViewModel = viewModel;
             _memoryMenu = new AFMediaBar.Components.MemoryContextMenu(memoryTools, () =>
@@ -159,7 +164,7 @@ namespace AFMediaBar.Views.Windows
             batterySettings.SetResourceReference(HeaderedItemsControl.HeaderProperty, "Loc.Battery.Open");
             batterySettings.Click += (_, _) =>
             {
-                _settingsHost.RequestOpen(window => window.NavigateToGroup(SettingsPageKey.DeviceManagement, "Battery.Title"));
+                _settingsHost.RequestOpen(window => window.NavigateToGroup(SettingsPageKey.BluetoothBattery, "Battery.Title"));
             };
             _batteryMenu.Children.Add(refreshBattery);
             _batteryMenu.Children.Add(batterySettings);
@@ -292,6 +297,10 @@ namespace AFMediaBar.Views.Windows
             _isClosing = true;
             _settingsHost.WindowClosed -= SettingsWindow_Closed;
             _settingsHost.Dispose();
+            _batteryOverview.OpenRequested -= OpenBatteryOverviewFromSettings;
+            _batteryOverview.SettingsRequested -= OpenBatterySettings;
+            CloseBatteryOverview();
+            _batteryFlyout?.Dispose();
             _trayMenuWindow.DismissImmediately();
             _memoryMenuWindow.DismissImmediately();
             _batteryMenuWindow.DismissImmediately();
@@ -852,6 +861,7 @@ namespace AFMediaBar.Views.Windows
         private TaskbarWindow CreateTaskbarWindow(string targetDeviceId)
         {
             var window = _taskbarFactory(targetDeviceId, this);
+            window.MediaControl.BatteryOverviewRequested += anchor => ShowBatteryOverview(anchor);
             window.OpenFullPanelRequested += TaskbarWindow_OpenFullPanelRequested;
             window.QueuePanelRequested += TaskbarWindow_QueuePanelRequested;
             window.InformationAutomaticallyHidden += TaskbarWindow_InformationAutomaticallyHidden;
@@ -902,6 +912,7 @@ namespace AFMediaBar.Views.Windows
 
         private void CloseFullPanelWindows()
         {
+            CloseBatteryOverview();
             _fullPanels.CloseAll();
             _queuePanels.CloseAll();
         }

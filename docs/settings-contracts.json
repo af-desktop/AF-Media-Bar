@@ -258,21 +258,24 @@
           "$release": "v1.7.0",
           "$items": {
             "component": "v1.7.0",
-            "isVisible": "v1.7.0"
+            "isVisible": "v1.7.0",
+            "deviceId": "unreleased"
           }
         },
         "idle": {
           "$release": "v1.7.0",
           "$items": {
             "component": "v1.7.0",
-            "isVisible": "v1.7.0"
+            "isVisible": "v1.7.0",
+            "deviceId": "unreleased"
           }
         },
         "hover": {
           "$release": "v1.7.0",
           "$items": {
             "component": "v1.7.0",
-            "isVisible": "v1.7.0"
+            "isVisible": "v1.7.0",
+            "deviceId": "unreleased"
           }
         }
       }
@@ -318,7 +321,19 @@
       "lastKnownName": "v1.6.0",
       "displayMode": "v1.6.0",
       "notifications": "v1.6.0",
-      "lowThreshold": "v1.6.0"
+      "connectionNotifications": "unreleased",
+      "cycleIntervalSeconds": "unreleased",
+      "fillColor": "unreleased",
+      "lowThreshold": "v1.6.0",
+      "visualStyle": "unreleased",
+      "presentationMode": "unreleased",
+      "selectedDevices": {
+        "$release": "unreleased",
+        "$items": {
+          "id": "unreleased",
+          "name": "unreleased"
+        }
+      }
     },
     "systemMemoryOptimization": {
       "$release": "v1.6.0",
@@ -1529,6 +1544,36 @@
         "Area": {
           "value": 4,
           "release": "v1.7.0"
+        }
+      }
+    },
+    "BatteryVisualStyle": {
+      "paths": [
+        "settings.bluetoothBatteryWidget.visualStyle"
+      ],
+      "members": {
+        "Numeric": {
+          "value": 0,
+          "release": "unreleased"
+        },
+        "Graphic": {
+          "value": 1,
+          "release": "unreleased"
+        }
+      }
+    },
+    "BatteryPresentationMode": {
+      "paths": [
+        "settings.bluetoothBatteryWidget.presentationMode"
+      ],
+      "members": {
+        "Cycle": {
+          "value": 0,
+          "release": "unreleased"
+        },
+        "Parallel": {
+          "value": 1,
+          "release": "unreleased"
         }
       }
     }

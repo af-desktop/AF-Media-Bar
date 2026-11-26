@@ -50,18 +50,30 @@ public static class ComponentLayoutPolicy
     public static IReadOnlyList<ComponentLayoutEntry> ResolveAll(AppSettings settings, BarLayoutState state)
     {
         var legacy = Legacy(settings, state);
-        if (settings.TaskbarExperience.ComponentLayouts?.Get(state) is not { } configured) return legacy;
+        var configured = settings.TaskbarExperience.ComponentLayouts?.Get(state) ?? legacy;
         var allowed = legacy.Select(entry => entry.Component).ToHashSet();
         var entries = configured.Where(entry => entry is not null && allowed.Contains(entry.Component))
-            .DistinctBy(entry => entry.Component).Select(entry => entry with { }).ToList();
+            .DistinctBy(entry => entry.Key).Select(entry => entry with { }).ToList();
         foreach (var entry in legacy)
-            if (!entries.Any(existing => existing.Component == entry.Component))
+            if (!entries.Any(existing => existing.Key == entry.Key))
             {
                 // 新增的队列入口对旧布局采用“悬浮层默认开启、驻留/空闲层默认关闭”，
                 // 用户显式关闭后仍由配置中的 false 保留。
                 var visible = state == BarLayoutState.Hover && entry.Component == TaskbarRestComponent.Queue;
                 entries.Add(entry with { IsVisible = visible });
             }
+        if (state != BarLayoutState.Hover)
+        {
+            var anchor = entries.FindIndex(e => e.Key == new ComponentKey(TaskbarRestComponent.BluetoothBattery));
+            var visible = anchor >= 0 && entries[anchor].IsVisible;
+            var insertion = anchor + 1;
+            foreach (var device in settings.BluetoothBatteryWidget.GetSelectedDevices())
+            {
+                var key = new ComponentKey(TaskbarRestComponent.BluetoothBattery, device.Id);
+                if (!entries.Any(e => e.Key == key)) entries.Insert(Math.Clamp(insertion++, 0, entries.Count),
+                    new(TaskbarRestComponent.BluetoothBattery, visible) { DeviceId = device.Id });
+            }
+        }
         var fixedItems = legacy.Where(entry => !CanMove(entry.Component)).Select(entry => entry.Component).ToArray();
         var ordered = fixedItems.Select(component => entries.Single(entry => entry.Component == component))
             .Concat(entries.Where(entry => CanMove(entry.Component))).ToArray();
@@ -71,29 +83,36 @@ public static class ComponentLayoutPolicy
     }
 
     public static IReadOnlyList<ComponentLayoutEntry> Resolve(AppSettings settings, BarLayoutState state) => ResolveAll(settings, state)
-        .Where(entry => state == BarLayoutState.Hover || settings.PerformanceComponent.DisplayMode == PerformanceDisplayMode.Parallel
-            ? state == BarLayoutState.Hover || entry.Component != TaskbarRestComponent.Performance
-            : !IsMetric(entry.Component)).ToArray();
+        .Where(entry => state == BarLayoutState.Hover ||
+            (settings.PerformanceComponent.DisplayMode == PerformanceDisplayMode.Parallel ? entry.Component != TaskbarRestComponent.Performance : !IsMetric(entry.Component)))
+        .Where(entry => entry.Component != TaskbarRestComponent.BluetoothBattery ||
+            (settings.BluetoothBatteryWidget.PresentationMode == BatteryPresentationMode.Cycle ? entry.DeviceId is null :
+                entry.DeviceId is not null && settings.BluetoothBatteryWidget.GetSelectedDevices().Any(d => new ComponentKey(entry.Component, d.Id) == entry.Key)))
+        .ToArray();
 
-    public static TaskbarExperienceSettings SetVisible(AppSettings settings, BarLayoutState state, TaskbarRestComponent component, bool visible)
+    public static TaskbarExperienceSettings SetVisible(AppSettings settings, BarLayoutState state, ComponentKey key, bool visible)
     {
-        var entries = ResolveAll(settings, state).Select(entry => entry.Component == component &&
-            !(state == BarLayoutState.Resident && component == TaskbarRestComponent.MediaText) ? entry with { IsVisible = visible } : entry).ToArray();
+        var entries = ResolveAll(settings, state).Select(entry => entry.Key == key &&
+            !(state == BarLayoutState.Resident && key.Component == TaskbarRestComponent.MediaText) ? entry with { IsVisible = visible } : entry).ToArray();
         return Set(settings.TaskbarExperience, state, entries);
     }
 
     public static bool TryMove(AppSettings settings, BarLayoutState state, TaskbarRestComponent component, int targetIndex,
-        IReadOnlyList<TaskbarRestComponent> expected, out TaskbarExperienceSettings result)
+        IReadOnlyList<TaskbarRestComponent> expected, out TaskbarExperienceSettings result) =>
+        TryMove(settings, state, new ComponentKey(component), targetIndex, expected.Select(c => new ComponentKey(c)).ToArray(), out result);
+
+    public static bool TryMove(AppSettings settings, BarLayoutState state, ComponentKey key, int targetIndex,
+        IReadOnlyList<ComponentKey> expected, out TaskbarExperienceSettings result)
     {
         result = settings.TaskbarExperience;
-        var projected = Resolve(settings, state).Select(entry => entry.Component).ToArray();
-        if (!CanMove(component) || !projected.SequenceEqual(expected) || targetIndex < 0 || targetIndex >= projected.Length ||
-            !CanMove(projected[targetIndex]) || !projected.Contains(component)) return false;
-        var sourceIndex = Array.IndexOf(projected, component);
+        var projected = Resolve(settings, state).Select(entry => entry.Key).ToArray();
+        if (!CanMove(key.Component) || !projected.SequenceEqual(expected) || targetIndex < 0 || targetIndex >= projected.Length ||
+            !CanMove(projected[targetIndex].Component) || !projected.Contains(key)) return false;
+        var sourceIndex = Array.IndexOf(projected, key);
         if (sourceIndex == targetIndex) return false;
         var all = ResolveAll(settings, state).ToList();
-        var source = all.Single(entry => entry.Component == component);
-        var target = all.Single(entry => entry.Component == projected[targetIndex]);
+        var source = all.Single(entry => entry.Key == key);
+        var target = all.Single(entry => entry.Key == projected[targetIndex]);
         all.Remove(source);
         var destination = all.IndexOf(target) + (sourceIndex < targetIndex ? 1 : 0);
         all.Insert(destination, source);
