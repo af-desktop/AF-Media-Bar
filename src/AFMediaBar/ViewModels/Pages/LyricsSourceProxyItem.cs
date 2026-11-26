@@ -24,7 +24,7 @@ public partial class LyricsSourceProxyItem : ObservableObject
     [ObservableProperty]
     private LyricsSourceProxyMode _proxyMode;
 
-    /// <summary>最近一次连通性测试的详情；空表示还没测过，作为按钮的悬停提示。</summary>
+    /// <summary>最近一次连通性测试的详情；空表示还没测过，有值时显示在代理下拉框左侧。</summary>
     [ObservableProperty]
     private string _testStatus = string.Empty;
 

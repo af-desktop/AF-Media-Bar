@@ -2592,9 +2592,6 @@
   <data name="Application.Network.SourceProxy.Description" xml:space="preserve">
     <value>Manage proxy settings for each lyric source. The default follows the system.</value>
   </data>
-  <data name="Application.Network.SourceProxy.Row.Description" xml:space="preserve">
-    <value>Use system proxy rules or connect directly for this source.</value>
-  </data>
   <data name="Application.Network.SourceProxy.Direct" xml:space="preserve">
     <value>Direct</value>
   </data>

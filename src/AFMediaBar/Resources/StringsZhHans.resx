@@ -2592,9 +2592,6 @@
   <data name="Application.Network.SourceProxy.Description" xml:space="preserve">
     <value>逐个配置歌词来源的代理，默认跟随系统。</value>
   </data>
-  <data name="Application.Network.SourceProxy.Row.Description" xml:space="preserve">
-    <value>采用系统代理规则，或为此来源启用直连。</value>
-  </data>
   <data name="Application.Network.SourceProxy.Direct" xml:space="preserve">
     <value>直连</value>
   </data>

@@ -2374,9 +2374,6 @@
   <data name="Application.Network.SourceProxy.Description" xml:space="preserve">
     <value>Cài đặt proxy cho từng nguồn lời bài hát. Mặc định theo hệ thống.</value>
   </data>
-  <data name="Application.Network.SourceProxy.Row.Description" xml:space="preserve">
-    <value>Dùng quy tắc proxy của hệ thống hoặc kết nối trực tiếp cho nguồn này.</value>
-  </data>
   <data name="Application.Network.SourceProxy.Direct" xml:space="preserve">
     <value>Trực tiếp</value>
   </data>
