@@ -29,7 +29,7 @@ public sealed class MediaSessionSelectionService : IDisposable, IMemoryPrunable
     public event Action? RefreshRequested;
 
     public MediaSessionSelectionService(MediaSessionCatalog catalog, MediaSourceRegistry sources)
-        : this(() => catalog.GetFocusedSession()?.Id, Application.Current.Dispatcher, () => DateTime.UtcNow,
+        : this(() => catalog.FocusedSessionId, Application.Current.Dispatcher, () => DateTime.UtcNow,
             sources.NormalizeSourceId)
     {
     }

@@ -12,10 +12,10 @@ public enum MediaSessionReconcileAction
     /// <summary>不动作。/ Do nothing.</summary>
     None = 0,
 
-    /// <summary>调用库的 ForceUpdate 重新枚举会话，然后重建会话列表与快照。/ Call the library's ForceUpdate, then rebuild the session list and snapshot.</summary>
+    /// <summary>调用宿主 ForceUpdate 重新枚举会话，然后重建会话列表与快照。/ Call the host's ForceUpdate, then rebuild the session list and snapshot.</summary>
     ForceUpdate = 1,
 
-    /// <summary>整只重建媒体目录：ForceUpdate 救不回来的库失效状态最后手段。/ Rebuild the whole media catalog: the last resort for a library broken state that ForceUpdate cannot fix.</summary>
+    /// <summary>整只重建媒体目录：ForceUpdate 救不回来的目录失效状态最后手段。/ Rebuild the whole media catalog: the last resort for a catalog broken state that ForceUpdate cannot fix.</summary>
     RestartCatalog = 2
 }
 
@@ -136,10 +136,10 @@ public static class MediaSessionReconcilePolicy
 
     /// <summary>
     /// 根据一次系统探测的结果决定动作。
-    /// 系统确实没有会话时不动（那是"没有媒体"，不是"库坏了"）；查询失败（负值）时做一次保守的 ForceUpdate；
+    /// 系统确实没有会话时不动（那是"没有媒体"，不是"目录坏了"）；查询失败（负值）时做一次保守的 ForceUpdate；
     /// 系统有会话而 ForceUpdate 连续失败时升级为重建整个目录。
     /// Picks the action from the result of one system probe.
-    /// Genuinely zero sessions means "no media" rather than "the library is broken", so nothing happens; a failed query (negative)
+    /// Genuinely zero sessions means "no media" rather than "the catalog is broken", so nothing happens; a failed query (negative)
     /// does one conservative ForceUpdate; and sessions that keep failing after ForceUpdate escalate to a full catalog rebuild.
     /// </summary>
     /// <param name="osSessionCount">操作系统当前发布的会话数；0 为确实没有媒体，负值为查询失败。/ Sessions the OS publishes; zero is genuinely no media, negative is a failed query.</param>

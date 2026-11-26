@@ -65,7 +65,7 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
     {
         if (_isDisposed || _isSnapshotBuilding() || _pendingReconcileStatus is not { } status) return;
         _pendingReconcileStatus = null;
-        FinalizeReconcileStatus(status.OsSessionCount, status.Elapsed);
+        FinalizeReconcileStatus(status.OsSessionCount, status.Elapsed, status.Action);
     }
 
     public void Dispose()
@@ -79,16 +79,16 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
         _reconcileGeneration++;
         _pendingReconcileStatus = null;
     }
-    private (int OsSessionCount, TimeSpan Elapsed)? _pendingReconcileStatus;
+    private (int OsSessionCount, TimeSpan Elapsed, MediaSessionReconcileAction Action)? _pendingReconcileStatus;
 
     /// <summary>
-    /// 自动重连看门狗：第三方库的会话字典只在 WinRT 事件触发时才同步（见库自己的 issue #6），换歌瞬间丢一次事件就会永久失明。
+    /// 自动重连看门狗：SMTC 目录只在 WinRT 事件触发时才同步，换歌瞬间丢一次事件就会永久失明。
     /// 看门狗按 <see cref="MediaSessionReconcilePolicy"/> 判定节奏，在"断连"时才把探测与恢复交给一个后台 single-flight 流程；
     /// UI 侧的 tick 只读状态、做时间门控，不执行任何系统调用或库调用。
-    /// Auto-reconcile watchdog: the third-party library only syncs its session dictionary when WinRT events fire (see its own issue #6),
+    /// Auto-reconcile watchdog: the SMTC catalog only syncs when WinRT events fire,
     /// so one lost event at a track change leaves it blind forever. The watchdog follows
     /// <see cref="MediaSessionReconcilePolicy"/> and hands probing and recovery to one background single-flight flow while
-    /// disconnected; the UI-side tick only reads state and gates time, making no system or library call.
+    /// disconnected; the UI-side tick only reads state and gates time, making no system or host call.
     /// </summary>
     private readonly DispatcherTimer _reconcileWatchdog;
     private readonly CancellationTokenSource _reconcileCancellation = new();
@@ -107,7 +107,7 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
     /// 再把探测与恢复交给后台 single-flight 流程。UI 线程在这里不做任何系统调用或库调用。
     /// Watchdog tick: gating only, with zero system calls. Once it passes, the probe slot is consumed immediately (so the common
     /// "no media at all" state cannot query once per second) and probing plus recovery are handed to the background single-flight
-    /// flow. The UI thread makes no system or library call here.
+    /// flow. The UI thread makes no system or host call here.
     /// </summary>
     private void OnReconcileWatchdogTick(object? sender, EventArgs e)
     {
@@ -158,18 +158,18 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
             ? TimeSpan.Zero
             : Stopwatch.GetElapsedTime(_lastCatalogRestartTimestamp);
         var token = _reconcileCancellation.Token;
-        _reconcileTask = Task.Run(() => ReconcileInBackground(generation, failures, catalogRestarts, sinceLastCatalogRestart, token));
+        _reconcileTask = Task.Run(() => ReconcileInBackgroundAsync(generation, failures, catalogRestarts, sinceLastCatalogRestart, token));
     }
 
     /// <summary>
-    /// 后台探测与恢复：第三方库的会话枚举（ForceUpdate）与目录重建都在这里执行，绝不占用 UI 线程。
+    /// 后台探测与恢复：SMTC 会话枚举（ForceUpdate）与目录重建都在这里执行，绝不占用 UI 线程。
     /// 完成后只把"发布"经 Dispatcher 送回 UI；取消、Dispose 或 generation 变化都会丢弃过期结果。
-    /// 库调用本身无法被取消，取消只保证过期结果不会被发布。
-    /// Background probe and recovery: the third-party library's enumeration (ForceUpdate) and the catalog rebuild run here and never
+    /// 宿主调用本身无法被取消，取消只保证过期结果不会被发布。
+    /// Background probe and recovery: the SMTC enumeration (ForceUpdate) and the catalog rebuild run here and never
     /// occupy the UI thread. Only the publication is marshalled back; cancellation, disposal, or a changed generation discard stale
-    /// results. The library call itself cannot be cancelled — cancellation only guarantees nothing stale is published.
+    /// results. The host call itself cannot be cancelled — cancellation only guarantees nothing stale is published.
     /// </summary>
-    private void ReconcileInBackground(int generation, int consecutiveFailures, int consecutiveCatalogRestarts, TimeSpan sinceLastCatalogRestart, CancellationToken token)
+    private async Task ReconcileInBackgroundAsync(int generation, int consecutiveFailures, int consecutiveCatalogRestarts, TimeSpan sinceLastCatalogRestart, CancellationToken token)
     {
         var started = Stopwatch.GetTimestamp();
         var osSessionCount = -1;
@@ -181,15 +181,22 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
                 return;
             }
 
-            osSessionCount = _catalog.GetOsSessionCount();
+            osSessionCount = await _catalog.GetOsSessionCountAsync(token).ConfigureAwait(false);
             action = MediaSessionReconcilePolicy.DecideAction(osSessionCount, consecutiveFailures, consecutiveCatalogRestarts, sinceLastCatalogRestart);
+            // 启动失败时 osSessionCount 通常为 -1，策略不会选择重建；这里补上恢复路径，但仍遵守重建冷却。
+            var canRestart = consecutiveCatalogRestarts < MediaSessionReconcilePolicy.CatalogRestartLimit ||
+                             sinceLastCatalogRestart >= MediaSessionReconcilePolicy.CatalogRestartCooldown;
+            if (_catalog.IsFailed && action != MediaSessionReconcileAction.RestartCatalog && canRestart)
+                action = MediaSessionReconcileAction.RestartCatalog;
             if (action == MediaSessionReconcileAction.RestartCatalog)
             {
-                _catalog.Restart();
+                using var restartDeadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+                restartDeadline.CancelAfter(TimeSpan.FromSeconds(10));
+                await _catalog.RestartAsync(restartDeadline.Token).ConfigureAwait(false);
             }
             else if (action == MediaSessionReconcileAction.ForceUpdate)
             {
-                _catalog.ForceUpdate();
+                await _catalog.ForceUpdateAsync(token).ConfigureAwait(false);
             }
         }
         catch (Exception ex)
@@ -212,7 +219,7 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
             {
                 try
                 {
-                    _dispatcher.BeginInvoke(() => CompleteReconcile(generation, osSessionCount, action, elapsed));
+                    _ = _dispatcher.BeginInvoke(() => CompleteReconcile(generation, osSessionCount, action, elapsed));
                 }
                 catch (Exception ex) when (ex is InvalidOperationException or TaskCanceledException)
                 {
@@ -248,12 +255,12 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
             _lastCatalogRestartTimestamp = Stopwatch.GetTimestamp();
             // 系统有会话而目录怎么都读不到：这是 ForceUpdate 救不回的库失效状态（字典里残留了失效条目），整只重建。
             // 连续重建到上限后策略会退回 ForceUpdate，不再每几秒重造一次目录（全屏游戏挡住系统查询时曾无限循环）。
-            // The OS has sessions while the catalog stays unreadable: a library broken state ForceUpdate cannot fix (a dead
+            // The OS has sessions while the catalog stays unreadable: a catalog broken state ForceUpdate cannot fix (a dead
             // dictionary entry), so the whole catalog was rebuilt. Past the limit the policy falls back to ForceUpdate instead
             // of rebuilding the catalog every few seconds (this looped forever while a fullscreen game blocked the OS query).
             AppLogService.Current?.Info(
                 "Media",
-                $"[看门狗] 系统有会话但目录读不到，已重建媒体目录（{(afterCooldown ? "冷却后重试" : $"快速重试 {_consecutiveCatalogRestarts}/{MediaSessionReconcilePolicy.CatalogRestartLimit}")}）");
+                $"[看门狗] {((osSessionCount > 0) ? "系统有会话但目录读不到" : "启动/重建失败")}，已重建媒体目录（{(afterCooldown ? "冷却后重试" : $"快速重试 {_consecutiveCatalogRestarts}/{MediaSessionReconcilePolicy.CatalogRestartLimit}")}）");
         }
 
         try
@@ -270,14 +277,14 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
         // spuriously escalate to a catalog restart while the recovered session is still being read.
         if (_isSnapshotBuilding())
         {
-            _pendingReconcileStatus = (osSessionCount, elapsed);
+            _pendingReconcileStatus = (osSessionCount, elapsed, action);
             return;
         }
 
-        FinalizeReconcileStatus(osSessionCount, elapsed);
+        FinalizeReconcileStatus(osSessionCount, elapsed, action);
     }
 
-    private void FinalizeReconcileStatus(int osSessionCount, TimeSpan elapsed)
+    private void FinalizeReconcileStatus(int osSessionCount, TimeSpan elapsed, MediaSessionReconcileAction action)
     {
         if (_isConnected())
         {
@@ -301,8 +308,12 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
         else
         {
             _consecutiveFailedReconciles = 0;
-            _consecutiveCatalogRestarts = 0;
-            _lastCatalogRestartTimestamp = 0;
+            // 启动失败的重建虽然 osSessionCount 为负，也必须保留重建计数/时间，否则会绕过冷却形成 1 秒重启循环。
+            if (action != MediaSessionReconcileAction.RestartCatalog && !_catalog.IsFailed)
+            {
+                _consecutiveCatalogRestarts = 0;
+                _lastCatalogRestartTimestamp = 0;
+            }
         }
 
         // 慢调用统计覆盖"探测到恢复"的整段耗时（含系统查询）；恢复正常耗时就清零，因此退避不会累积成永久性的慢节奏。

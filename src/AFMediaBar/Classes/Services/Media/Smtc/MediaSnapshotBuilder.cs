@@ -1,5 +1,4 @@
 // Converts SMTC sessions and owns their enrichment caches; lyrics retrieval is delegated to LyricsService.
-using System.Runtime.InteropServices;
 using System.Windows.Media;
 using AFMediaBar.Classes.Abstractions;
 using AFMediaBar.Classes.Models;
@@ -7,9 +6,7 @@ using AFMediaBar.Classes.Services.Lyrics;
 using AFMediaBar.Classes.Settings;
 using AFMediaBar.Classes.Utils;
 using AFMediaBar.Resources;
-using Windows.Media.Control;
-using WindowsMediaController;
-using static WindowsMediaController.MediaManager;
+using Windows.Media;
 
 namespace AFMediaBar.Classes.Services.Media.Smtc;
 
@@ -157,72 +154,42 @@ public sealed class MediaSnapshotBuilder : IMemoryPrunable, IDisposable
         EnrichmentCompleted?.Invoke();
     }
 
+    private static readonly TimeSpan SmtcReadTimeout = TimeSpan.FromSeconds(8);
+
     /// <summary>
-    /// 从一个稳定会话读取不可变媒体快照；异步封面或歌词结果通过补全事件另行发布。
-    /// Builds an immutable media snapshot from a stable session; asynchronous artwork or lyrics results are published separately.
+    /// 从当前会话句柄读取不可变媒体快照；实际 COM 读取由 catalog 的宿主串行执行。
+    /// Builds an immutable media snapshot from the current session handle; the catalog's host serializes the actual COM read.
     /// </summary>
-    public Task<MediaSnapshot?> BuildAsync(MediaSession? session, bool isStarted, CancellationToken cancellationToken = default) =>
-        BuildCoreAsync(session, isStarted, null, cancellationToken);
+    internal Task<MediaSnapshot?> BuildAsync(SmtcSession? session, MediaSessionCatalog catalog, CancellationToken cancellationToken = default) =>
+        BuildCoreAsync(session, catalog, cancellationToken);
 
-    internal Task<MediaSnapshot?> BuildLeasedAsync(MediaSession session, MediaSessionCatalog catalog, CancellationToken cancellationToken) =>
-        BuildCoreAsync(session, true, catalog, cancellationToken);
-
-    private async Task<MediaSnapshot?> BuildCoreAsync(MediaSession? session, bool isStarted,
-        MediaSessionCatalog? catalog, CancellationToken cancellationToken)
+    private async Task<MediaSnapshot?> BuildCoreAsync(SmtcSession? session, MediaSessionCatalog catalog,
+        CancellationToken cancellationToken)
     {
-        if (_disposed || session is null || !isStarted)
+        if (_disposed || session is null || !session.IsOpen)
         {
             return MediaSnapshot.Disconnected;
         }
 
-        var controlSession = session.ControlSession;
-
-        // 第三方库可能在选中之后关闭会话并清除 ControlSession；本次构建跳过，关闭事件会安排下一次刷新。
-        // The third-party library can close the session and clear ControlSession after selection; skip this build and let
-        // the close event schedule the next refresh.
-        if (controlSession is null)
-        {
-            return null;
-        }
-
-        SmtcMediaRead? read;
+        SmtcBackendRead? read;
         try
         {
-            // WinRT calls, stream hashing and WPF bitmap decoding can all wait on an external player or disk.
-            // Frozen artwork can safely cross back to the UI thread; color brushes and lyric caches stay UI-owned.
-            read = await Task.Run(async () =>
-            {
-                // 租约覆盖实际 WinRT 读取，结束后在后台释放，不依赖 UI 续体或取消结果发布。
-                using var lease = catalog?.TryAcquireSession(session);
-                if (catalog is not null && lease is null) return null;
-                var songInfo = await controlSession.TryGetMediaPropertiesAsync();
-                if (songInfo is null) return null;
-                var playbackInfo = controlSession.GetPlaybackInfo();
-                var timeline = controlSession.GetTimelineProperties();
-                var artwork = ArtworkLoader.GetThumbnail(songInfo.Thumbnail);
-                return new SmtcMediaRead(
-                    songInfo.Title ?? string.Empty,
-                    songInfo.Artist ?? string.Empty,
-                    songInfo.AlbumTitle ?? string.Empty,
-                    controlSession.SourceAppUserModelId ?? string.Empty,
-                    playbackInfo.PlaybackType == Windows.Media.MediaPlaybackType.Video ||
-                    songInfo.PlaybackType == Windows.Media.MediaPlaybackType.Video,
-                    artwork,
-                    playbackInfo.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing,
-                    playbackInfo.Controls?.IsPlayPauseToggleEnabled ?? false,
-                    playbackInfo.Controls?.IsPreviousEnabled ?? false,
-                    playbackInfo.Controls?.IsNextEnabled ?? false,
-                    playbackInfo.Controls?.IsPlaybackPositionEnabled ?? false,
-                    playbackInfo.Controls?.IsRepeatEnabled ?? false,
-                    MapRepeatMode(playbackInfo.AutoRepeatMode),
-                    playbackInfo.PlaybackRate is > 0 ? playbackInfo.PlaybackRate.Value : 1,
-                    timeline.StartTime.TotalSeconds,
-                    (timeline.EndTime - timeline.StartTime).TotalSeconds,
-                    timeline.Position.TotalSeconds,
-                    timeline.LastUpdatedTime);
-            }, cancellationToken);
+            // 单次读取设超时上限，防止异常播放器长期占住宿主串行闸门。
+            using var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            readTimeout.CancelAfter(SmtcReadTimeout);
+            read = await catalog.ReadAsync(session.Id, SmtcReadScope.All, readTimeout.Token);
         }
-        catch (Exception exception) when (exception is COMException or InvalidOperationException or ObjectDisposedException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException exception)
+        {
+            if (!_disposed)
+                _readFailures.Report(_log, "Media", $"smtc:{session.Id}", "读取 SMTC 媒体快照超时", exception);
+            return null;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
         {
             if (!_disposed && !cancellationToken.IsCancellationRequested)
                 _readFailures.Report(_log, "Media", $"smtc:{session.Id}", "读取 SMTC 媒体快照失败", exception);
@@ -230,57 +197,56 @@ public sealed class MediaSnapshotBuilder : IMemoryPrunable, IDisposable
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        if (_disposed || read is null)
+        if (_disposed || read is null || !read.Playback.IsKnown)
         {
             return null;
         }
 
         _readFailures.Recover(_log, "Media", $"smtc:{session.Id}", "SMTC 媒体读取已恢复");
-        var duration = Math.Max(0, read.Duration);
-        var position = Math.Clamp(read.Position - read.TimelineStart, 0, duration > 0 ? duration : double.MaxValue);
-        var sourceId = read.SourceId;
-        var title = read.Title;
-        var artist = read.Artist;
-        var request = new LyricsRequest(title, artist, read.Album, duration > 0 ? duration : null, null,
+        var duration = Math.Max(0, (read.Timeline.End - read.Timeline.Start).TotalSeconds);
+        var position = Math.Clamp(read.Timeline.Position.TotalSeconds - read.Timeline.Start.TotalSeconds, 0,
+            duration > 0 ? duration : double.MaxValue);
+        var sourceId = session.SourceAppId;
+        var title = read.Media.Title;
+        var artist = read.Media.Artist;
+        var request = new LyricsRequest(title, artist, read.Media.Album, duration > 0 ? duration : null, null,
             PlaybackSourceId: sourceId);
-        var lyrics = GetLyrics(session.Id, sourceId, request, read.IsVideo, read.IsPlaying, deferUntilDurationSettles: true);
+        var lyrics = GetLyrics(session.Id, sourceId, request, read.Media.IsVideo || read.Playback.IsVideo,
+            read.Playback.IsPlaying, deferUntilDurationSettles: true);
         var searchingLyrics = lyrics is null && IsSearchingLyrics();
+        var artwork = read.Artwork is { Length: > 0 } bytes
+            ? await Task.Run(() => ArtworkLoader.GetThumbnail(bytes), cancellationToken)
+            : null;
 
         return new MediaSnapshot(
             true,
-            read.IsPlaying,
-            read.CanPlayPause,
-            read.CanSkipPrevious,
-            read.CanSkipNext,
+            read.Playback.IsPlaying,
+            read.Playback.CanTogglePlayPause,
+            read.Playback.CanSkipPrevious,
+            read.Playback.CanSkipNext,
             title,
             artist,
             sourceId,
             MediaSourceNameFormatter.GetDisplayName(sourceId, UnknownSourceName),
-            read.Artwork,
+            artwork,
             lyrics,
             position,
             duration,
-            duration > 0 && read.CanSeek,
-            read.CanChangeRepeat,
-            read.RepeatMode,
-            read.PlaybackRate,
-            read.TimelineUpdatedAt)
+            duration > 0 && read.Playback.CanSeek,
+            read.Playback.CanRepeat,
+            read.Playback.IsRepeatKnown ? MapRepeatMode(read.Playback.RepeatMode) : MediaRepeatMode.Unavailable,
+            read.Playback.PlaybackRate,
+            read.Timeline.LastUpdated)
         {
             IsSearchingLyrics = searchingLyrics
         };
     }
 
-    private sealed record SmtcMediaRead(
-        string Title, string Artist, string Album, string SourceId, bool IsVideo, System.Windows.Media.Imaging.BitmapImage? Artwork,
-        bool IsPlaying, bool CanPlayPause, bool CanSkipPrevious, bool CanSkipNext,
-        bool CanSeek, bool CanChangeRepeat, MediaRepeatMode RepeatMode, double PlaybackRate,
-        double TimelineStart, double Duration, double Position, DateTimeOffset TimelineUpdatedAt);
-
-    private static MediaRepeatMode MapRepeatMode(Windows.Media.MediaPlaybackAutoRepeatMode? mode) => mode switch
+    private static MediaRepeatMode MapRepeatMode(MediaPlaybackAutoRepeatMode mode) => mode switch
     {
-        Windows.Media.MediaPlaybackAutoRepeatMode.None => MediaRepeatMode.Off,
-        Windows.Media.MediaPlaybackAutoRepeatMode.List => MediaRepeatMode.All,
-        Windows.Media.MediaPlaybackAutoRepeatMode.Track => MediaRepeatMode.One,
+        MediaPlaybackAutoRepeatMode.None => MediaRepeatMode.Off,
+        MediaPlaybackAutoRepeatMode.List => MediaRepeatMode.All,
+        MediaPlaybackAutoRepeatMode.Track => MediaRepeatMode.One,
         _ => MediaRepeatMode.Unavailable
     };
 

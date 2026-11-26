@@ -75,7 +75,6 @@ list drives the "Open source" section of the About page in Settings through
 | Package | Version | License | Home page |
 | --- | --- | --- | --- |
 | CommunityToolkit.Mvvm | 8.4.0 | MIT | https://github.com/CommunityToolkit/dotnet |
-| Dubya.WindowsMediaController | 2.5.6 | MIT | https://github.com/DubyaDude/WindowsMediaController |
 | F23.StringSimilarity | 7.0.1 | MIT | https://github.com/feature23/StringSimilarity.NET |
 | Lyricify.Lyrics.Helper | 0.2.0 | Apache-2.0 | https://github.com/WXRIW/Lyricify-Lyrics-Helper |
 | MicaWPF | 7.1.0 | MIT | https://github.com/Simnico99/MicaWPF |

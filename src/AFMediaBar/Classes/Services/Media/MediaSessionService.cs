@@ -9,10 +9,6 @@ using AFMediaBar.Classes.Models;
 using AFMediaBar.Classes.Services.Lyrics;
 using AFMediaBar.Classes.Settings;
 using AFMediaBar.Resources;
-using Windows.Media.Control;
-using Windows.Media;
-using WindowsMediaController;
-using static WindowsMediaController.MediaManager;
 
 namespace AFMediaBar.Classes.Services;
 
@@ -45,7 +41,7 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
     private MediaSnapshot _lastSnapshot = MediaSnapshot.Disconnected;
     // 播放进度的跨帧记录：报过进度的曲目、真正播过的曲目、正在观察的曲目。刚打开播放器时都是空的，不会误提示。
     private PlaybackProgressMemory _progressMemory = PlaybackProgressMemory.Empty;
-    private IReadOnlyList<MediaSession> _lastSessions = Array.Empty<MediaSession>();
+    private IReadOnlyList<SmtcSession> _lastSessions = Array.Empty<SmtcSession>();
     private IReadOnlyList<MediaSourceCandidate> _smtcCandidates = Array.Empty<MediaSourceCandidate>();
     private IReadOnlyList<MediaSourceCandidate> _candidates = Array.Empty<MediaSourceCandidate>();
     private string? _selectedSessionKey;
@@ -53,6 +49,7 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
     private int _controlSelectionRevision;
     private bool _snapshotBuildInFlight;
     private bool _snapshotBuildPending;
+    private int _consecutiveNullSnapshotBuilds;
     private int _refreshQueued;
     private readonly CancellationTokenSource _snapshotBuildCancellation = new();
     private readonly BrowserMissingPresentationState _browserPresentation = new();
@@ -113,12 +110,7 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
         _reconcile = new MediaSessionReconcileCoordinator(_catalog, _selection, _memoryPrune,
             _dispatcher, () => _sessionSnapshot.IsConnected, () => _snapshotBuildInFlight, RefreshSnapshot, log);
 
-        _catalog.AnyMediaPropertyChanged += OnAnyMediaPropertyChanged;
-        _catalog.AnyPlaybackStateChanged += OnAnyPlaybackStateChanged;
-        _catalog.AnySessionOpened += OnAnySessionOpened;
-        _catalog.AnySessionClosed += OnAnySessionClosed;
-        _catalog.FocusedSessionChanged += OnFocusedSessionChanged;
-        _catalog.AnyTimelinePropertyChanged += OnAnyTimelinePropertyChanged;
+        _catalog.StateChanged += OnCatalogStateChanged;
         _selection.RefreshRequested += OnSelectionRefreshRequested;
         _snapshotBuilder.EnrichmentCompleted += OnSnapshotEnrichmentCompleted;
         SettingsManager.SettingsChanged += OnSettingsChanged;
@@ -132,7 +124,48 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
         // The watchdog lives on the UI thread at Background priority: its job is one extra system query and must never race input or rendering.
         _reconcile.Start();
 
+        _ = StartCatalogAsync();
         ScheduleSessionsRefresh();
+    }
+
+    private async Task StartCatalogAsync()
+    {
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            if (_isDisposed || _catalog.IsStarted) return;
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_snapshotBuildCancellation.Token);
+                timeout.CancelAfter(TimeSpan.FromSeconds(10));
+                await _catalog.StartAsync(timeout.Token);
+                return;
+            }
+            catch (OperationCanceledException) when (_snapshotBuildCancellation.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                _log?.Warn("Media", $"SMTC 目录启动失败（第 {attempt + 1} 次），稍后重试", exception);
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5), _snapshotBuildCancellation.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+        }
     }
 
     /// <summary>
@@ -173,66 +206,25 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
         RefreshSnapshot();
     }
 
-    /// <summary>
-    /// 将播放/暂停请求转发给当前选中的 SMTC 会话；会话已消失时安全忽略。
-    /// Forwards play/pause to the selected SMTC session and safely ignores the request if that session has disappeared.
-    /// </summary>
-    public Task TogglePlayPauseAsync() => ExecuteOnSelectedAsync(async controlSession =>
-    {
-        return controlSession.GetPlaybackInfo().Controls?.IsPlayPauseToggleEnabled == true &&
-            await controlSession.TryTogglePlayPauseAsync();
-    });
+    public Task TogglePlayPauseAsync() => ExecuteSelectedCommandAsync(SmtcCommand.TogglePlayPause);
 
     /// <summary>
     /// 将上一首请求转发给当前仍有效的选中会话。
     /// Forwards the previous-track request to the selected session while it remains valid.
     /// </summary>
-    public Task SkipPreviousAsync() => ExecuteOnSelectedAsync(async controlSession =>
-    {
-        return await controlSession.TrySkipPreviousAsync();
-    });
+    public Task SkipPreviousAsync() => ExecuteSelectedCommandAsync(SmtcCommand.SkipPrevious);
 
     /// <summary>
     /// 将下一首请求转发给当前仍有效的选中会话。
     /// Forwards the next-track request to the selected session while it remains valid.
     /// </summary>
-    public Task SkipNextAsync() => ExecuteOnSelectedAsync(async controlSession =>
-    {
-        return await controlSession.TrySkipNextAsync();
-    });
+    public Task SkipNextAsync() => ExecuteSelectedCommandAsync(SmtcCommand.SkipNext);
 
     /// <summary>跳转到当前媒体的相对播放位置。 / Seeks to a relative position in the selected media item.</summary>
-    public Task SeekAsync(double positionSeconds) => ExecuteOnSelectedAsync(async controlSession =>
-    {
-        var controls = controlSession.GetPlaybackInfo().Controls;
-        var timeline = controlSession.GetTimelineProperties();
-        var duration = Math.Max(0, (timeline.EndTime - timeline.StartTime).TotalSeconds);
-        if (duration <= 0 || controls?.IsPlaybackPositionEnabled != true)
-        {
-            return false;
-        }
-
-        var target = timeline.StartTime + TimeSpan.FromSeconds(Math.Clamp(positionSeconds, 0, duration));
-        return await controlSession.TryChangePlaybackPositionAsync(target.Ticks);
-    });
+    public Task SeekAsync(double positionSeconds) => ExecuteSelectedCommandAsync(SmtcCommand.Seek, positionSeconds);
 
     /// <summary>在关闭、列表和单曲循环之间切换。 / Cycles repeat between off, list, and track.</summary>
-    public Task CycleRepeatModeAsync() => ExecuteOnSelectedAsync(async controlSession =>
-    {
-        var playback = controlSession.GetPlaybackInfo();
-        if (playback.Controls?.IsRepeatEnabled != true)
-        {
-            return false;
-        }
-
-        var next = playback.AutoRepeatMode switch
-        {
-            MediaPlaybackAutoRepeatMode.List => MediaPlaybackAutoRepeatMode.Track,
-            MediaPlaybackAutoRepeatMode.Track => MediaPlaybackAutoRepeatMode.None,
-            _ => MediaPlaybackAutoRepeatMode.List
-        };
-        return await controlSession.TryChangeAutoRepeatModeAsync(next);
-    });
+    public Task CycleRepeatModeAsync() => ExecuteSelectedCommandAsync(SmtcCommand.CycleRepeat);
 
     /// <summary>
     /// 尝试激活当前媒体来源对应的前台窗口，不存在可用进程时保持无操作。
@@ -257,12 +249,7 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
         _snapshotBuildCancellation.Dispose();
         CancelBrowserPresentationHold();
         _reconcile.Dispose();
-        _catalog.AnyMediaPropertyChanged -= OnAnyMediaPropertyChanged;
-        _catalog.AnyPlaybackStateChanged -= OnAnyPlaybackStateChanged;
-        _catalog.AnySessionOpened -= OnAnySessionOpened;
-        _catalog.AnySessionClosed -= OnAnySessionClosed;
-        _catalog.FocusedSessionChanged -= OnFocusedSessionChanged;
-        _catalog.AnyTimelinePropertyChanged -= OnAnyTimelinePropertyChanged;
+        _catalog.StateChanged -= OnCatalogStateChanged;
         _selection.RefreshRequested -= OnSelectionRefreshRequested;
         _snapshotBuilder.EnrichmentCompleted -= OnSnapshotEnrichmentCompleted;
         SettingsManager.SettingsChanged -= OnSettingsChanged;
@@ -275,8 +262,8 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
         _catalog.Dispose();
     }
 
-    private async Task ExecuteOnSelectedAsync(
-        Func<GlobalSystemMediaTransportControlsSession, Task<bool>> action, [CallerMemberName] string operation = "")
+    private async Task ExecuteSelectedCommandAsync(
+        SmtcCommand command, double? positionSeconds = null, [CallerMemberName] string operation = "")
     {
         if (_isDisposed) return;
         var sourceId = SelectedSourceId;
@@ -288,17 +275,13 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
         }
 
         var selected = sessions.FirstOrDefault(session =>
-            MediaSessionGuard.IsUsable(session) &&
-            _sources.IsAllowed(MediaSessionGuard.GetSourceId(session), SettingsManager.Current.SmtcSourceFilter) &&
+            session.IsOpen &&
+            _sources.IsAllowed(session.SourceAppId, SettingsManager.Current.SmtcSourceFilter) &&
             string.Equals(session.Id, _selectedSessionKey, StringComparison.Ordinal) &&
-            string.Equals(_sources.NormalizeSourceId(MediaSessionGuard.GetSourceId(session)),
+            string.Equals(_sources.NormalizeSourceId(session.SourceAppId),
                 _sources.NormalizeSourceId(_selection.SelectedSourceId ?? string.Empty), StringComparison.OrdinalIgnoreCase));
 
-        // 会话可能刚被第三方库关闭；此处只取一次引用，后续命令交给该引用，避免读取过程中属性被置空。
-        // The session may have just been closed by the third-party library; capture the reference once and issue commands
-        // through that local so a concurrently cleared property cannot turn the call into a null reference.
-        var controlSession = selected?.ControlSession;
-        if (controlSession is null)
+        if (selected is null)
         {
             ReportControlUnavailable(sourceId, operation);
             return;
@@ -306,22 +289,16 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
 
         try
         {
-            var accepted = await Task.Run(async () =>
-            {
-                using var lease = _catalog.TryAcquireSession(selected!);
-                if (lease is null) return (bool?)null;
-                return await action(controlSession).ConfigureAwait(false);
-            });
-            if (accepted is null) return;
-            if (_isDisposed || !_catalog.IsCurrentSession(selected!)) return;
-            if (accepted == false && selectionRevision == _controlSelectionRevision)
+            var accepted = await _catalog.ExecuteAsync(selected.Id, command, positionSeconds, _snapshotBuildCancellation.Token);
+            if (_isDisposed || !_catalog.IsCurrentSession(selected)) return;
+            if (!accepted && selectionRevision == _controlSelectionRevision)
                 ReportControlUnavailable(sourceId, operation);
-            else if (accepted == true && selectionRevision == _controlSelectionRevision)
+            else if (accepted && selectionRevision == _controlSelectionRevision)
                 (_readFailures ??= new()).Recover(_log, "Media", $"control:{operation}:{sourceId}", "媒体控制已恢复");
         }
-        catch (Exception ex) when (ex is COMException or InvalidOperationException or ObjectDisposedException)
+        catch (Exception ex) when (ex is COMException or InvalidOperationException or ObjectDisposedException or OperationCanceledException)
         {
-            if (!_isDisposed && _catalog.IsCurrentSession(selected!) && selectionRevision == _controlSelectionRevision)
+            if (!_isDisposed && _catalog.IsCurrentSession(selected) && selectionRevision == _controlSelectionRevision)
                 ReportControlUnavailable(sourceId, operation, ex);
         }
     }
@@ -349,39 +326,24 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
         }
     }
 
-    private void OnAnyMediaPropertyChanged(
-        MediaSession session,
-        GlobalSystemMediaTransportControlsSessionMediaProperties properties)
+    private void OnCatalogStateChanged(SmtcCatalogState state)
     {
-        Interlocked.Increment(ref _mediaRevision);
-        ScheduleRefresh();
+        if (_isDisposed) return;
+        // 仅在目录/元数据/状态变化时推进 revision，避免高频时间轴或焦点事件冲掉在途封面读取。
+        const SmtcCatalogChangeKind revisionMask = SmtcCatalogChangeKind.Status | SmtcCatalogChangeKind.Sessions |
+                                                   SmtcCatalogChangeKind.SessionClosed | SmtcCatalogChangeKind.Metadata;
+        if ((state.LastChange & revisionMask) != 0)
+            Interlocked.Increment(ref _mediaRevision);
+
+        var armReconcile = state.LastChange.HasFlag(SmtcCatalogChangeKind.SessionClosed);
+        _ = _dispatcher.BeginInvoke(() =>
+        {
+            if (_isDisposed) return;
+            if (armReconcile)
+                _reconcile.Arm();
+            ScheduleSessionsRefresh();
+        }, DispatcherPriority.Normal);
     }
-
-    private void OnAnyPlaybackStateChanged(
-        MediaSession session,
-        GlobalSystemMediaTransportControlsSessionPlaybackInfo playbackInfo) => ScheduleSessionsRefresh();
-
-    private void OnAnySessionOpened(MediaSession session)
-    {
-        Interlocked.Increment(ref _mediaRevision);
-        ScheduleSessionsRefresh();
-    }
-
-    private void OnAnySessionClosed(MediaSession session)
-    {
-        Interlocked.Increment(ref _mediaRevision);
-        // 会话关闭是"换歌重建会话"的信号，也正是第三方库漏事件的高发点：武装快速窗口，让看门狗用 1 秒的节奏把新会话捞回来。
-        // A session closing signals a track change and is exactly where the third-party library loses events: arm the fast window so the
-        // watchdog catches the recreated session on a one-second cadence.
-        _reconcile.Arm();
-        ScheduleSessionsRefresh();
-    }
-
-    private void OnFocusedSessionChanged(MediaSession session) => ScheduleSessionsRefresh();
-
-    private void OnAnyTimelinePropertyChanged(
-        MediaSession session,
-        GlobalSystemMediaTransportControlsSessionTimelineProperties properties) => ScheduleRefresh();
 
     private void OnSelectionRefreshRequested() => ScheduleSessionsRefresh();
 
@@ -541,15 +503,15 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
         }
     }
 
-    private void RefreshSnapshot(IReadOnlyList<MediaSession> sessions)
+    private void RefreshSnapshot(IReadOnlyList<SmtcSession> sessions)
     {
         if (_isDisposed)
             return;
         try
         {
-            _lastSessions = sessions.Where(MediaSessionGuard.IsUsable).ToArray();
+            _lastSessions = sessions.Where(session => session.IsOpen).ToArray();
             _smtcCandidates = _lastSessions.Select(session => new MediaSourceCandidate(
-                session.Id, MediaSessionGuard.GetSourceId(session), IsPlaying(session), session.Id)).ToArray();
+                session.Id, session.SourceAppId, IsPlaying(session), session.Id)).ToArray();
             _candidates = BuildCandidates();
             var selected = _selection.Resolve(_candidates, SettingsManager.Current.MediaSelection);
             if (selected is null && _selection.IsMissingSessionGraceActive)
@@ -565,6 +527,7 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
             {
                 _controlSelectionKey = selected?.Key;
                 _controlSelectionRevision++;
+                _consecutiveNullSnapshotBuilds = 0;
             }
             _selectedSessionKey = selected?.SessionKey;
             var session = _lastSessions.FirstOrDefault(item => item.Id == _selectedSessionKey);
@@ -595,9 +558,9 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
         }
     }
 
-    private async Task<MediaSnapshot?> BuildLeasedSnapshotAsync(MediaSession session, CancellationToken cancellationToken)
+    private async Task<MediaSnapshot?> BuildLeasedSnapshotAsync(SmtcSession session, CancellationToken cancellationToken)
     {
-        var snapshot = await _snapshotBuilder.BuildLeasedAsync(session, _catalog, cancellationToken);
+        var snapshot = await _snapshotBuilder.BuildAsync(session, _catalog, cancellationToken);
         return _isDisposed || !_catalog.IsCurrentSession(session) ? null : snapshot;
     }
 
@@ -613,9 +576,22 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
 
             if (snapshot is not null)
             {
+                _consecutiveNullSnapshotBuilds = 0;
                 Publish(snapshot);
                 (_readFailures ??= new()).Recover(_log, "Media", "build", "媒体快照构建已恢复");
                 TryRequestFallbackLyrics();
+            }
+            else if (!_catalog.IsStarted || _catalog.FindSession(sessionKey) is null)
+            {
+                // 会话已不在目录中：走常规目录刷新以经过选择器和浏览器 3 秒保留，不绕过宽限直接断连。
+                _consecutiveNullSnapshotBuilds = 0;
+                ScheduleSessionsRefresh();
+            }
+            else if (++_consecutiveNullSnapshotBuilds >= 2)
+            {
+                // 连续两次读取失败再断连：避免切歌瞬间单次空读闪烁，同时确保持续失效时看门狗能介入。
+                _consecutiveNullSnapshotBuilds = 0;
+                Publish(MediaSnapshot.Disconnected);
             }
         }
         catch (OperationCanceledException) when (_isDisposed)
@@ -735,11 +711,11 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
         _browserPresentationTimerTick = null;
     }
 
-    private void PublishDiscoveredSources(IReadOnlyList<MediaSession> sessions)
+    private void PublishDiscoveredSources(IReadOnlyList<SmtcSession> sessions)
     {
         var independentIds = _sourceSnapshots.Values.OfType<MediaSnapshot>()
             .Where(snapshot => snapshot.IsConnected).Select(snapshot => snapshot.SourceId);
-        var sourceIds = _sources.DiscoverSourceIds(sessions.Select(MediaSessionGuard.GetSourceId).Concat(independentIds))
+        var sourceIds = _sources.DiscoverSourceIds(sessions.Select(session => session.SourceAppId).Concat(independentIds))
             .Order(StringComparer.OrdinalIgnoreCase).ToArray();
         if (!sourceIds.SequenceEqual(_discoverySourceIds, StringComparer.OrdinalIgnoreCase))
         {
@@ -894,25 +870,5 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
             $"prev={snapshot.CanSkipPrevious},next={snapshot.CanSkipNext},repeat={snapshot.CanChangeRepeat}) repeat={snapshot.RepeatMode}");
     }
 
-    private bool IsPlaying(MediaSession session)
-    {
-        // 会话可能在本方法执行期间被第三方库关闭，读取失败一律按“未播放”处理。
-        // The third-party library may close the session while this method runs, so every read failure means "not playing".
-        if (!MediaSessionGuard.IsUsable(session))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var lease = _catalog.TryAcquireSession(session);
-            if (lease is null) return false;
-            return session.ControlSession.GetPlaybackInfo().PlaybackStatus ==
-                GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
-        }
-        catch
-        {
-            return false;
-        }
-    }
+    private bool IsPlaying(SmtcSession session) => session.IsOpen && session.IsPlaying;
 }

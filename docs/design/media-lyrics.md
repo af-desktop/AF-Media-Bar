@@ -1,4 +1,4 @@
-<!-- owner: AF Media Bar maintainers | verified_at: e0be3bdb | review_by: 2027-03-05 -->
+<!-- owner: AF Media Bar maintainers | verified_at: 0500b601 | review_by: 2027-03-05 -->
 
 # 媒体与歌词
 
@@ -6,11 +6,12 @@
 
 ## 来源与身份
 
-- 第三方动态集合只有目录服务一个所有者；消费者读取稳定数组，不把会话引用当成生命周期保证。重建与退出等已有租约结束后释放旧实例；所有权锁内不调用第三方库或用户事件。
+- SMTC 目录由 `SmtcSessionHost` 独占：宿主持有 manager/session 和全部 COM 调用，消费者只读不可变状态和普通读取结果，不持有 WinRT 对象。重建与退出由宿主串行释放；状态事件在宿主线程发布，订阅者只做调度，不得同步回调宿主。
+- 宿主只有一个操作闸门：系统 SMTC RPC 卡住时，读取、控制和重建都会排队。这是为避免 COM 并发崩溃而接受的边界；冷启动与 LoL 全屏是实机验收重点。
 - `MediaSourceRegistry` 统一来源身份、别名、过滤和仲裁。`SourceId` 与 `SelectionKey` 在注册来源间唯一，既有值保持兼容；`Matches` 同时识别规范 ID 和别名，别名互不重叠。
 - 来源允许策略必须在选择、自动跟随、菜单、快照、媒体命令和提供器补充前统一执行；过滤用大小写不敏感的规范身份，不持久化临时会话标识。
 - SMTC 与独立来源并列。独立来源实现 `IIndependentMediaSourceProvider`，无 SMTC 时仍可被发现；Provider 负责轮询、读取、取消和释放，纯策略不持有外部资源。
-- SMTC 会话关闭时控制对象可能被置空；用构造后不变的 `MediaSession.Id` 经 guard 取来源，访问控制对象前检查可用性。
+- SMTC 会话关闭由宿主串行处理：WinRT 事件只上报 ID，宿主在自身线程退订、移除并发布新状态；消费者不得直接检查或调用 WinRT 会话。
 - 网易云保留 `playingList` 与 `fmPlay` 两条内存路径；只有按身份查找失败才尝试 `currentIndex`，且曲名必须与 SMTC 对得上。酷狗走独立来源与内存读取。
 - 两条独立来源的合并统一为 SMTC 优先：标题、歌手、封面、播放状态和控制来自 SMTC；位置、时长和来源歌词由内存补充。内存不可用或 stale 时回退 SMTC；没有 SMTC 时回退内存。
 - 内存与 SMTC 不一致时先保留 1.5 秒给 SMTC 追上；期间只显示 SMTC，不叠加内存时间轴或歌词。超时后仍不一致时继续使用 SMTC 元数据，但时间轴/歌词改由内存提供。封面始终取 SMTC，不做同曲目门槛。

@@ -45,6 +45,7 @@ AF-Media-Bar/
 | `TaskBarMediaControl.BarLyricsPresenter` | 每个控件独有的 WebView、刷新/重试计时器和歌词恢复订阅；卸载可重载，最终释放拒绝迟到结果 |
 | `SpectrumPresentationSession` | 每个任务栏或悬浮宿主的采样计时器、缓冲与代际；借用应用级 AudioMonitorService，不释放共享音频服务 |
 | `FullPanelWindowHost` | 各显示器完整面板的字典、关闭冷却、复用和最终释放；MainWindow 只表达打开、关闭和上下文意图 |
+| `SmtcSessionHost` | 专用 STA 线程、操作闸门与事件合并队列；拥有 SMTC manager/session 和全部 COM 调用 |
 | `MediaSessionReconcileCoordinator` | SMTC 重连看门狗、取消与退避；借用目录和选择器，不接管它们的释放 |
 | `ViewModels/` | 可绑定状态、命令和异步协调；不引用具体 View、HWND 或 App.Services |
 | `Classes/Services/<领域>/` | 业务、平台资源、协调器与纯策略；新服务不直接放 Services 根目录 |

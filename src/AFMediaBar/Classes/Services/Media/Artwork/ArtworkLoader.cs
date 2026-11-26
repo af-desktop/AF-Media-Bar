@@ -4,7 +4,6 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Windows.Media.Imaging;
-using Windows.Storage.Streams;
 
 namespace AFMediaBar.Classes.Utils;
 
@@ -19,44 +18,17 @@ internal static class ArtworkLoader
     private static readonly LruCache<int, BitmapImage> ThumbnailCache = new(CacheEntryLimit);
 
     /// <summary>
-    /// 读取缩略图内容并计算稳定哈希，用于缓存键。
-    /// Reads thumbnail content and computes a stable hash for cache keys.
+    /// 从已读取的封面字节加载并缓存缩略图；后台线程解码，返回冻结位图。
+    /// Loads and caches a thumbnail from bytes already read by the SMTC host; decoding stays off the UI thread.
     /// </summary>
-    /// <param name="thumbnail">缩略图流引用。/ Thumbnail stream reference.</param>
-    /// <returns>内容哈希；读取失败时返回对象哈希。/ Content hash, or the object hash when reading fails.</returns>
-    internal static int GetStableThumbnailHash(IRandomAccessStreamReference thumbnail)
+    /// <param name="data">封面字节；为空或损坏时返回 null。</param>
+    /// <param name="maxThumbnailSize">最大解码宽度。</param>
+    internal static BitmapImage? GetThumbnail(byte[]? data, int maxThumbnailSize = MaxThumbnailSize)
     {
-        if (thumbnail == null)
-            return 0;
-
-        try
-        {
-            using Stream stream = thumbnail.OpenReadAsync().GetAwaiter().GetResult().AsStreamForRead();
-            using SHA256 sha256 = SHA256.Create();
-            byte[] hashBytes = sha256.ComputeHash(stream);
-            return BitConverter.ToInt32(hashBytes, 0);
-        }
-        catch (Exception)
-        {
-            return thumbnail.GetHashCode();
-        }
-    }
-
-    /// <summary>
-    /// 同步加载并缓存 WinRT 缩略图，同时更新当前异步上下文的封面哈希。
-    /// Synchronously loads and caches a WinRT thumbnail while updating the current async context artwork hash.
-    /// </summary>
-    /// <param name="thumbnail">缩略图流引用。/ Thumbnail stream reference.</param>
-    /// <param name="maxThumbnailSize">最大解码宽度。/ Maximum decoded width.</param>
-    /// <returns>冻结的 WPF 位图；输入无效、无法读取或解码时返回 null。</returns>
-    internal static BitmapImage? GetThumbnail(
-        IRandomAccessStreamReference? thumbnail,
-        int maxThumbnailSize = MaxThumbnailSize)
-    {
-        if (thumbnail == null)
+        if (data is not { Length: > 0 })
             return null;
 
-        var hashCode = GetStableThumbnailHash(thumbnail);
+        var hashCode = GetStableThumbnailHash(data);
         if (hashCode == 0)
             return null;
 
@@ -68,13 +40,13 @@ internal static class ArtworkLoader
         {
             try
             {
-                image = DecodeThumbnail(thumbnail, maxThumbnailSize, BitmapCreateOptions.None);
+                image = DecodeThumbnail(data, maxThumbnailSize, BitmapCreateOptions.None);
             }
             catch (IOException exception) when (exception.InnerException is COMException { HResult: unchecked((int)0x88982F72) })
             {
                 // QQ Music can publish valid JPEG pixels with truncated EXIF metadata. WIC's color-context read
                 // then fails with WINCODEC_ERR_STREAMREAD; retry without color management before dropping artwork.
-                image = DecodeThumbnail(thumbnail, maxThumbnailSize, BitmapCreateOptions.IgnoreColorProfile);
+                image = DecodeThumbnail(data, maxThumbnailSize, BitmapCreateOptions.IgnoreColorProfile);
             }
         }
         catch (Exception exception) when (exception is IOException or COMException or NotSupportedException or FileFormatException)
@@ -88,17 +60,31 @@ internal static class ArtworkLoader
         return image;
     }
 
-    private static BitmapImage DecodeThumbnail(
-        IRandomAccessStreamReference thumbnail, int maxThumbnailSize, BitmapCreateOptions options)
+    private static int GetStableThumbnailHash(byte[] data)
     {
-        using var imageStream = thumbnail.OpenReadAsync().GetAwaiter().GetResult().AsStreamForRead();
+        try
+        {
+            using SHA256 sha256 = SHA256.Create();
+            return BitConverter.ToInt32(sha256.ComputeHash(data), 0);
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
+    private static BitmapImage DecodeThumbnail(byte[] data, int maxThumbnailSize, BitmapCreateOptions options)
+    {
+        using var stream = new MemoryStream(data, writable: false);
         BitmapImage image = new();
         image.BeginInit();
         image.CacheOption = BitmapCacheOption.OnLoad;
         image.CreateOptions = options;
         image.DecodePixelWidth = maxThumbnailSize;
-        image.StreamSource = imageStream;
+        image.StreamSource = stream;
         image.EndInit();
+        // 解码完成后解除流引用，避免冻结位图长期持有原始压缩字节数组。
+        image.StreamSource = null;
         image.Freeze();
         return image;
     }
