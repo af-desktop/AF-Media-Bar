@@ -123,6 +123,10 @@ public sealed class MetricVisualSettingsTests
                 model.PanelSystemNetworkVisual = MetricVisualStyle.Bar;
                 Assert.AreEqual(MetricVisualStyle.Numeric, model.BarProcessMemoryVisual);
                 Assert.AreEqual(MetricVisualStyle.Numeric, model.PanelSystemNetworkVisual);
+                model.BarSystemCpuVisual = MetricVisualStyle.NumericFull;
+                model.BarSystemNetworkVisual = MetricVisualStyle.NumericFull;
+                Assert.AreEqual(MetricVisualStyle.NumericFull, model.BarSystemCpuVisual);
+                Assert.AreEqual(MetricVisualStyle.Numeric, model.BarSystemNetworkVisual);
                 model.BarSystemCpuVisual = MetricVisualStyle.Ring;
                 model.PanelSystemNetworkVisual = MetricVisualStyle.Line;
                 Assert.AreEqual(MetricVisualStyle.Area, model.PanelSystemCpuVisual);

@@ -24,7 +24,7 @@ public sealed class MetricChart : FrameworkElement
         set
         {
             _visualStyle = value;
-            Visibility = value == MetricVisualStyle.Numeric ? Visibility.Collapsed : Visibility.Visible;
+            Visibility = value is MetricVisualStyle.Numeric or MetricVisualStyle.NumericFull ? Visibility.Collapsed : Visibility.Visible;
             InvalidateVisual();
         }
     }
@@ -64,7 +64,7 @@ public sealed class MetricChart : FrameworkElement
     protected override void OnRender(DrawingContext context)
     {
         base.OnRender(context);
-        if (ActualWidth < 2 || ActualHeight < 2 || VisualStyle == MetricVisualStyle.Numeric) return;
+        if (ActualWidth < 2 || ActualHeight < 2 || VisualStyle is MetricVisualStyle.Numeric or MetricVisualStyle.NumericFull) return;
         var brush = TextElement.GetForeground(this);
         var highContrast = SystemParameters.HighContrast;
         // 图形各层分别控制浓淡，保留趋势线对比度，避免面积填充被二次淡化。

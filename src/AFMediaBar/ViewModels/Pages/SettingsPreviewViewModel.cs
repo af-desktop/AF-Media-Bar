@@ -65,7 +65,9 @@ public sealed class SettingsPreviewViewModel : ObservableObject, IDisposable
         IsVertical = _configuration.Context.Orientation == AFMediaBar.Classes.Models.Layout.LayoutOrientation.Vertical;
         var state = Mode == SettingsPreviewMode.QuickControls ? BarLayoutState.Hover : ShowIdle ? BarLayoutState.Idle : BarLayoutState.Resident;
         Items = (Mode == SettingsPreviewMode.QuickControls && !Experience.HoverLayerEnabled ? [] : ComponentLayoutPolicy.Resolve(current, state))
-            .Where(entry => entry.IsVisible && (entry.Component != TaskbarRestComponent.BluetoothBattery || current.Experiments.BluetoothBattery))
+            .Where(entry => entry.IsVisible &&
+                (entry.Component != TaskbarRestComponent.BluetoothBattery || current.Experiments.BluetoothBattery) &&
+                (entry.Component != TaskbarRestComponent.Queue || current.Experiments.NonsPlayerQueue))
             .Select(entry => new SettingsPreviewItem(entry.Component, ComponentLayoutPolicy.IsMetric(entry.Component) ? ComponentLayoutPolicy.Metric(entry.Component) :
                 entry.Component == TaskbarRestComponent.Performance ? Performance.GetOrderedMetrics().First() : null, entry.DeviceId)).ToArray();
         OnPropertyChanged(new PropertyChangedEventArgs(string.Empty));

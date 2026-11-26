@@ -104,7 +104,7 @@ public sealed class MetricPresenter : Grid
                 : "↓ " + MetricPresentationPolicy.FormatRate(_snapshot.NetworkDownloadBytesPerSecond))
                 : MetricPresentationPolicy.Format(Metric, _snapshot);
             var split = formatted.IndexOf(' ');
-            var label = !network ? Metric switch
+            var label = !network && VisualStyle != MetricVisualStyle.NumericFull ? Metric switch
             {
                 MetricKind.SystemMemory => "M",
                 MetricKind.SystemCpu => "C",
@@ -166,7 +166,7 @@ public sealed class MetricPresenter : Grid
                 name.TextAlignment = readout.TextAlignment = TextAlignment.Left;
                 if (!stackText) readout.Margin = new Thickness(4 + labelWidth + 5, 0, 4, 0);
             }
-            if (VisualStyle == MetricVisualStyle.Numeric && !network && !Vertical && readoutWidth + labelWidth + 13 <= laneWidth)
+            if (VisualStyle is MetricVisualStyle.Numeric or MetricVisualStyle.NumericFull && !network && !Vertical && readoutWidth + labelWidth + 13 <= laneWidth)
             {
                 // 标签和读数组合居中，避免短标签与数值分居卡片两端。
                 var groupLeft = (laneWidth - labelWidth - 5 - readoutWidth) / 2;

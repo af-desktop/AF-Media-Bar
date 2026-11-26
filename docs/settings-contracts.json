@@ -5,6 +5,7 @@
   "settings": {
     "experiments": {
       "bluetoothBattery": "v1.6.0",
+      "nonsPlayerQueue": "unreleased",
       "memoryTools": "v1.6.0",
       "systemMemoryCleanup": "v1.6.0",
       "floatingBar": "v1.5.0",
@@ -1544,6 +1545,10 @@
         "Area": {
           "value": 4,
           "release": "v1.7.0"
+        },
+        "NumericFull": {
+          "value": 5,
+          "release": "unreleased"
         }
       }
     },

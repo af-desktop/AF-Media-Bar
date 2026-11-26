@@ -649,7 +649,8 @@ namespace AFMediaBar.Views.Windows
                 page = SettingsPageKey.Experimental;
             else if ((page is SettingsPageKey.DeviceManagement or SettingsPageKey.Widgets) && group == "Battery.Title" && !experiments.BluetoothBattery)
                 page = SettingsPageKey.Experimental;
-            if (!string.IsNullOrEmpty(group)) NavigateToGroup(page, group);
+            var optionId = string.IsNullOrEmpty(request.OptionId) ? null : request.OptionId;
+            if (!string.IsNullOrEmpty(group)) NavigateToGroup(page, group, optionId);
             else Navigate(SettingsPageProvider.PageTypes[page]);
         }
         private void OnContextRefreshFailed(object? sender, Exception exception) => _log.Error("Settings", "读取设置页任务栏环境失败，保留上次有效上下文", exception);

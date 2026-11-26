@@ -12,21 +12,25 @@ public sealed class SettingsNavigationButton : Wpf.Ui.Controls.Button
         nameof(Destination), typeof(SettingsPageKey), typeof(SettingsNavigationButton), new PropertyMetadata(SettingsPageKey.Interaction));
     public static readonly DependencyProperty GroupIdProperty = DependencyProperty.Register(
         nameof(GroupId), typeof(string), typeof(SettingsNavigationButton), new PropertyMetadata(string.Empty));
+    public static readonly DependencyProperty OptionIdProperty = DependencyProperty.Register(
+        nameof(OptionId), typeof(string), typeof(SettingsNavigationButton), new PropertyMetadata(string.Empty));
     public static readonly RoutedEvent NavigateEvent = EventManager.RegisterRoutedEvent(
         nameof(Navigate), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(SettingsNavigationButton));
     public SettingsPageKey Destination { get => (SettingsPageKey)GetValue(DestinationProperty); set => SetValue(DestinationProperty, value); }
     public string GroupId { get => (string)GetValue(GroupIdProperty); set => SetValue(GroupIdProperty, value); }
+    public string OptionId { get => (string)GetValue(OptionIdProperty); set => SetValue(OptionIdProperty, value); }
     public event RoutedEventHandler Navigate { add => AddHandler(NavigateEvent, value); remove => RemoveHandler(NavigateEvent, value); }
     protected override void OnClick()
     {
         base.OnClick();
-        RaiseEvent(new SettingsNavigationEventArgs(Destination, GroupId));
+        RaiseEvent(new SettingsNavigationEventArgs(Destination, GroupId, OptionId));
     }
 }
 
-/// <summary>保留稳定页面键与分组键的跳转请求，不携带窗口或设置对象。</summary>
-public sealed class SettingsNavigationEventArgs(SettingsPageKey destination, string groupId) : RoutedEventArgs(SettingsNavigationButton.NavigateEvent)
+/// <summary>保留稳定页面键、分组键与可选定位项键的跳转请求，不携带窗口或设置对象。</summary>
+public sealed class SettingsNavigationEventArgs(SettingsPageKey destination, string groupId, string optionId = "") : RoutedEventArgs(SettingsNavigationButton.NavigateEvent)
 {
     public SettingsPageKey Destination { get; } = destination;
     public string GroupId { get; } = groupId;
+    public string OptionId { get; } = optionId;
 }

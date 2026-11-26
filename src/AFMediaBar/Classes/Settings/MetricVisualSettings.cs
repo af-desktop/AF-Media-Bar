@@ -10,7 +10,8 @@ public enum MetricVisualStyle
     Bar = 1,
     Ring = 2,
     Line = 3,
-    Area = 4
+    Area = 4,
+    NumericFull = 5
 }
 
 /// <summary>每个指标独立选择样式，网络上下行共用一个选项。</summary>
@@ -47,10 +48,12 @@ public readonly record struct MetricVisualSettings
         _ => this with { SystemNetwork = style }
     };
 
-    /// <summary>无总量上限的指标只使用数值或趋势，旧条形及环形选择回退为数值。</summary>
+    /// <summary>无总量上限的指标只使用数值或趋势，旧条形及环形选择回退为数值；网速无英文缩写，纯数值2回退为纯数值。</summary>
     public static MetricVisualStyle ResolveStyle(MetricKind metric, MetricVisualStyle style) =>
-        !Enum.IsDefined(style) || (metric is MetricKind.ProcessMemory or MetricKind.SystemNetwork &&
-            style is MetricVisualStyle.Bar or MetricVisualStyle.Ring) ? MetricVisualStyle.Numeric : style;
+        !Enum.IsDefined(style) ||
+        (metric is MetricKind.ProcessMemory or MetricKind.SystemNetwork && style is MetricVisualStyle.Bar or MetricVisualStyle.Ring) ||
+        (metric == MetricKind.SystemNetwork && style == MetricVisualStyle.NumericFull)
+            ? MetricVisualStyle.Numeric : style;
 
     public MetricVisualSettings Normalize(MetricVisualSettings defaults = default)
     {

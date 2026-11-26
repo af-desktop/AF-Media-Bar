@@ -1556,7 +1556,7 @@ public partial class TaskbarWindow : Window, IBarRuntimeHost
             return;
 
         var hasSource = !string.IsNullOrEmpty(_lastSnapshot.SourceId) || !string.IsNullOrEmpty(_lastSnapshot.SourceName);
-        var available = hasSource && _playerCompanion.MatchesSource(_lastSnapshot.SourceId, _lastSnapshot.SourceName);
+        var available = SettingsManager.Current.Experiments.NonsPlayerQueue && hasSource && _playerCompanion.MatchesSource(_lastSnapshot.SourceId, _lastSnapshot.SourceName);
         MediaControl.SetQueueAvailable(available);
     }
 

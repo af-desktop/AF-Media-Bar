@@ -19,6 +19,16 @@
                     </WrapPanel>
                 </StackPanel>
             </components:SettingsGroup>
+            <components:SettingsGroup GroupId="Experimental.NonsQueue.Title" Header="{DynamicResource Loc.Experimental.NonsQueue.Title}" Description="{DynamicResource Loc.Experimental.NonsQueue.Description}" Icon="{ui:SymbolIcon DocumentQueue24}">
+                <StackPanel>
+                    <components:SettingsRow Icon="{ui:SymbolIcon DocumentQueue24}" Title="{DynamicResource Loc.Experimental.Enable}" KeepControlInline="True">
+                        <ui:ToggleSwitch IsChecked="{Binding ViewModel.NonsPlayerQueue, Mode=TwoWay}"/>
+                    </components:SettingsRow>
+                    <WrapPanel Style="{StaticResource AfSettingsRelatedLinksStyle}">
+                        <components:SettingsNavigationButton Content="{DynamicResource Loc.Experimental.NonsQueue.Open}" Destination="Components" GroupId="Common.HoverLayer" OptionId="component:Hover:Queue"/>
+                    </WrapPanel>
+                </StackPanel>
+            </components:SettingsGroup>
             <components:SettingsGroup GroupId="Memory.Title" Header="{DynamicResource Loc.Memory.Title}" Description="{DynamicResource Loc.Memory.Explanation}" Icon="{ui:SymbolIcon ArrowMinimize24}">
                 <StackPanel>
                     <components:SettingsRow Icon="{ui:SymbolIcon ArrowMinimize24}" Title="{DynamicResource Loc.Experimental.Enable}" KeepControlInline="True">

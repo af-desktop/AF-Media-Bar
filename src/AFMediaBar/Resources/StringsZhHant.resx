@@ -3027,6 +3027,9 @@
   <data name="Common.Page.Experimental" xml:space="preserve"><value>實驗功能</value></data>
   <data name="Experimental.Warning" xml:space="preserve"><value>實驗性功能未經充分測試，如遇問題，請透過任意現有回饋管道回報。</value></data>
   <data name="Experimental.Enable" xml:space="preserve"><value>啟用此實驗</value></data>
+  <data name="Experimental.NonsQueue.Title" xml:space="preserve"><value>Nons Player 播放佇列聯動</value></data>
+  <data name="Experimental.NonsQueue.Description" xml:space="preserve"><value>在快捷控制層中顯示 Nons Player 播放佇列按鈕。使用前請在 Nons Player 的「設定 → 網路與服務」中開啟「開放 API」功能。</value></data>
+  <data name="Experimental.NonsQueue.Open" xml:space="preserve"><value>前往播放佇列開關</value></data>
   <data name="Experimental.Vertical.Title" xml:space="preserve"><value>直向工作列</value></data>
   <data name="Experimental.Vertical.Description" xml:space="preserve"><value>在實際的左側或右側工作列中顯示直向媒體列。</value></data>
   <data name="Experimental.Vertical.Shared" xml:space="preserve"><value>工作列橫向與直向共用同一份設定。此處修改也會影響橫向工作列。</value></data>
@@ -3676,6 +3679,9 @@
   </data>
 <data name="Performance.Visual.Numeric" xml:space="preserve">
     <value>純數值</value>
+  </data>
+<data name="Performance.Visual.NumericFull" xml:space="preserve">
+    <value>純數值2</value>
   </data>
 <data name="Performance.Visual.Bar" xml:space="preserve">
     <value>條形</value>

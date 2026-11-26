@@ -341,6 +341,8 @@ public static class SettingsSearchIndex
             ["内存", "記憶體", "memory", "ram", "定时", "阈值", "自动优化", "深度", "工作集", "托管堆", "待机页", "缓存清理", "automatic", "threshold", "timer"]),
         Create(SettingsPageKey.Experimental, "Memory.Title", "Memory.ToolsDescription", language,
             ["内存工具", "memory tools", "系统清理", "优化 AF", "优化系统"]),
+        Create(SettingsPageKey.Experimental, "Experimental.NonsQueue.Title", "Experimental.NonsQueue.Description", language,
+            ["Nons", "Nons Player", "播放列表", "播放队列", "播放佇列", "开放 API", "開放 API", "open api", "queue", "playlist"]),
 
         // ---- 关于 / About ----
         Create(

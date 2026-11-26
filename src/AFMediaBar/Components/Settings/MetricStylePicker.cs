@@ -56,7 +56,16 @@ public sealed class MetricStylePicker : Grid
         try
         {
             _picker.Items.Clear();
-            foreach (var style in Enum.GetValues<MetricVisualStyle>().Where(style => MetricVisualSettings.ResolveStyle(Metric, style) == style))
+            MetricVisualStyle[] orderedStyles =
+            [
+                MetricVisualStyle.Numeric,
+                MetricVisualStyle.NumericFull,
+                MetricVisualStyle.Bar,
+                MetricVisualStyle.Ring,
+                MetricVisualStyle.Line,
+                MetricVisualStyle.Area
+            ];
+            foreach (var style in orderedStyles.Where(style => MetricVisualSettings.ResolveStyle(Metric, style) == style))
             {
                 var item = new ComboBoxItem { Tag = style };
                 item.SetResourceReference(ContentControl.ContentProperty, "Loc.Performance.Visual." + style);

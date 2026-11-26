@@ -142,7 +142,9 @@ public sealed class AudioSettingsPageLoadingTests
                     navigations++;
                 }));
                 var links = LogicalChildren(entry).OfType<SettingsNavigationButton>().ToArray();
-                Assert.AreEqual(2, links.Length);
+                Assert.AreEqual(3, links.Length);
+                Assert.IsTrue(links.Any(link => link.Destination == AFMediaBar.Classes.Services.SettingsPageKey.Components && link.GroupId == "Common.HoverLayer" && link.OptionId == "component:Hover:Queue"),
+                    "实验页应提供直达快捷控制层播放队列开关的定位按钮。");
                 Assert.IsFalse(LogicalChildren(entry).OfType<SettingsGroup>().Any(group => group.GroupId is "Experimental.Floating.Title" or "Experimental.Vertical.Title"));
                 foreach (var link in links)
                 {
