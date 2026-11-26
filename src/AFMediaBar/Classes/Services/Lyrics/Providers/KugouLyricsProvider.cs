@@ -81,6 +81,7 @@ public sealed class KugouLyricsProvider : ILyricsProvider
 
         var document = LyricsTextParser.Parse(
             krc,
+            romanizationText: KugouKrcRomanization.Extract(krc),
             request: request,
             durationSeconds: request.DurationSeconds,
             filterInfoLines: request.FilterInfoLines);
@@ -124,7 +125,8 @@ public sealed class KugouLyricsProvider : ILyricsProvider
 
         cancellationToken.ThrowIfCancellationRequested();
         var candidates = response?.Candidates;
-        if (response is not { Status: 200, ErrorCode: 0 } || candidates is null) return (null, false);
+        // 接口这两项都按 HTTP 风格回 200；旧写法只认 0，导致每次都在这里放弃、酷狗永远取不到词。
+        if (response is not { Status: 200, ErrorCode: 0 or 200 } || candidates is null) return (null, false);
         if (candidates is not { Count: > 0 })
         {
             return (null, true);
