@@ -52,8 +52,10 @@ public sealed class AudioSettingsPageLoadingTests
                 // Host 可在后台线程启动；实验关闭时也会发布初始状态，不能跨线程触碰呈现对象。
                 using var battery = new BluetoothBatteryService(new(), new(), null!, null!);
                 var batteryStatus = new TextBlock();
-                battery.Changed += (_, _) => batteryStatus.Text = "updated";
+                var batteryUpdated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                battery.Changed += (_, _) => { batteryStatus.Text = "updated"; batteryUpdated.TrySetResult(); };
                 await Task.Run(() => battery.StartAsync(CancellationToken.None));
+                await batteryUpdated.Task.WaitAsync(TimeSpan.FromSeconds(5));
                 Assert.AreEqual("updated", batteryStatus.Text);
                 await battery.StopAsync(CancellationToken.None);
                 application.Resources.MergedDictionaries.Add(new Wpf.Ui.Markup.ThemesDictionary());
