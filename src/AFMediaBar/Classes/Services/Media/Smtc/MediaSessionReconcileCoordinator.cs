@@ -219,7 +219,7 @@ internal sealed class MediaSessionReconcileCoordinator : IDisposable
             {
                 try
                 {
-                    _dispatcher.BeginInvoke(() => CompleteReconcile(generation, osSessionCount, action, elapsed));
+                    _ = _dispatcher.BeginInvoke(() => CompleteReconcile(generation, osSessionCount, action, elapsed));
                 }
                 catch (Exception ex) when (ex is InvalidOperationException or TaskCanceledException)
                 {

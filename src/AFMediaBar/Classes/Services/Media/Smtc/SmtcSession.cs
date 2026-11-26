@@ -47,13 +47,28 @@ internal sealed class SmtcSession
     }
 }
 
+/// <summary>最近一次状态发布包含的变化类别，供调用方区分刷新、看门狗武装与过期判定。</summary>
+[Flags]
+internal enum SmtcCatalogChangeKind
+{
+    None = 0,
+    Status = 1,
+    Sessions = 2,
+    SessionClosed = 4,
+    Focused = 8,
+    Playback = 16,
+    Metadata = 32,
+    Timeline = 64
+}
+
 /// <summary>目录的不可变状态；每次变化生成新实例。</summary>
 internal sealed record SmtcCatalogState(
     int Generation,
     int Revision,
     SmtcHostStatus Status,
     string? FocusedSessionId,
-    IReadOnlyList<SmtcSession> Sessions)
+    IReadOnlyList<SmtcSession> Sessions,
+    SmtcCatalogChangeKind LastChange = SmtcCatalogChangeKind.None)
 {
-    internal static SmtcCatalogState Initial { get; } = new(0, 0, SmtcHostStatus.Starting, null, []);
+    internal static SmtcCatalogState Initial { get; } = new(0, 0, SmtcHostStatus.Starting, null, [], SmtcCatalogChangeKind.None);
 }

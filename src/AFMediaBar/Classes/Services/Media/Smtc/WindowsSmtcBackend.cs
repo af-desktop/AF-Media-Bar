@@ -26,22 +26,47 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         if (_started) return;
-        _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask(cancellationToken);
-        cancellationToken.ThrowIfCancellationRequested();
-        _sessionsChanged = (_, _) => Raise(new SmtcBackendEvent(SmtcBackendEventKind.SessionsDirty, null));
-        _currentSessionChanged = (_, _) => Raise(new SmtcBackendEvent(SmtcBackendEventKind.FocusedDirty, null));
-        _manager.SessionsChanged += _sessionsChanged;
-        _manager.CurrentSessionChanged += _currentSessionChanged;
-        _started = true;
+        var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask(cancellationToken);
+        _manager = manager;
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _sessionsChanged = (_, _) => Raise(new SmtcBackendEvent(SmtcBackendEventKind.SessionsDirty, null));
+            _currentSessionChanged = (_, _) => Raise(new SmtcBackendEvent(SmtcBackendEventKind.FocusedDirty, null));
+            manager.SessionsChanged += _sessionsChanged;
+            manager.CurrentSessionChanged += _currentSessionChanged;
+            _started = true;
+        }
+        catch
+        {
+            await StopAsync();
+            throw;
+        }
     }
 
     public Task StopAsync()
     {
         _started = false;
-        if (_manager is not null)
+        var manager = _manager;
+        var sessionsChanged = _sessionsChanged;
+        var currentSessionChanged = _currentSessionChanged;
+        _manager = null;
+        _sessionsChanged = null;
+        _currentSessionChanged = null;
+
+        if (manager is not null)
         {
-            if (_sessionsChanged is not null) _manager.SessionsChanged -= _sessionsChanged;
-            if (_currentSessionChanged is not null) _manager.CurrentSessionChanged -= _currentSessionChanged;
+            // COM 已断开时退订可能抛异常；必须隔离，否则 RestartAsync/Dispose 会永远卡在失效 manager 上。
+            if (sessionsChanged is not null)
+            {
+                try { manager.SessionsChanged -= sessionsChanged; }
+                catch (Exception) { }
+            }
+            if (currentSessionChanged is not null)
+            {
+                try { manager.CurrentSessionChanged -= currentSessionChanged; }
+                catch (Exception) { }
+            }
         }
 
         foreach (var session in _sessions.Values.ToArray())
@@ -50,9 +75,6 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
             catch (Exception) { }
         }
         _sessions.Clear();
-        _manager = null;
-        _sessionsChanged = null;
-        _currentSessionChanged = null;
         return Task.CompletedTask;
     }
 
@@ -86,7 +108,7 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
                 continue;
             }
 
-            if (string.IsNullOrWhiteSpace(id) || !present.Add(id))
+            if (string.IsNullOrWhiteSpace(id) || present.Contains(id))
                 continue;
 
             if (_sessions.TryGetValue(id, out var existing))
@@ -95,16 +117,22 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
                 {
                     existing.Detach();
                     existing.Session = raw;
-                    existing.Attach();
+                    if (!existing.TryAttach())
+                    {
+                        _sessions.Remove(id);
+                        continue;
+                    }
                 }
             }
             else
             {
                 var registration = new SessionRegistration(id, raw, Raise);
-                registration.Attach();
+                if (!registration.TryAttach())
+                    continue;
                 _sessions[id] = registration;
             }
 
+            present.Add(id);
             result.Add(new SmtcBackendSession(id, id));
         }
 
@@ -114,7 +142,7 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
             _sessions.Remove(id);
         }
 
-        return Task.FromResult<IReadOnlyList<SmtcBackendSession>>(result);
+        return Task.FromResult<IReadOnlyList<SmtcBackendSession>?>(result);
     }
 
     public async Task<SmtcBackendRead?> ReadAsync(string sessionId, SmtcReadScope scope, CancellationToken cancellationToken)
@@ -142,7 +170,7 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
             GlobalSystemMediaTransportControlsSessionMediaProperties? properties = null;
             if (scope.HasFlag(SmtcReadScope.Media) || scope.HasFlag(SmtcReadScope.Artwork))
             {
-                properties = await session.TryGetMediaPropertiesAsync();
+                properties = await session.TryGetMediaPropertiesAsync().AsTask(cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
                 if (properties is null)
                     return null;
@@ -186,11 +214,11 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
             {
                 case SmtcCommand.TogglePlayPause:
                     var playback = session.GetPlaybackInfo();
-                    return playback.Controls?.IsPlayPauseToggleEnabled == true && await session.TryTogglePlayPauseAsync();
+                    return playback.Controls?.IsPlayPauseToggleEnabled == true && await session.TryTogglePlayPauseAsync().AsTask(cancellationToken);
                 case SmtcCommand.SkipPrevious:
-                    return await session.TrySkipPreviousAsync();
+                    return await session.TrySkipPreviousAsync().AsTask(cancellationToken);
                 case SmtcCommand.SkipNext:
-                    return await session.TrySkipNextAsync();
+                    return await session.TrySkipNextAsync().AsTask(cancellationToken);
                 case SmtcCommand.Seek when positionSeconds is { } seconds:
                     var seekPlayback = session.GetPlaybackInfo();
                     if (seekPlayback.Controls?.IsPlaybackPositionEnabled != true)
@@ -200,7 +228,7 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
                     if (duration <= 0)
                         return false;
                     var target = timeline.StartTime + TimeSpan.FromSeconds(Math.Clamp(seconds, 0, duration));
-                    return await session.TryChangePlaybackPositionAsync(target.Ticks);
+                    return await session.TryChangePlaybackPositionAsync(target.Ticks).AsTask(cancellationToken);
                 case SmtcCommand.CycleRepeat:
                     var current = session.GetPlaybackInfo();
                     if (current.Controls?.IsRepeatEnabled != true)
@@ -211,10 +239,14 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
                         MediaPlaybackAutoRepeatMode.Track => MediaPlaybackAutoRepeatMode.None,
                         _ => MediaPlaybackAutoRepeatMode.List
                     };
-                    return await session.TryChangeAutoRepeatModeAsync(next);
+                    return await session.TryChangeAutoRepeatModeAsync(next).AsTask(cancellationToken);
                 default:
                     return false;
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception)
         {
@@ -289,7 +321,7 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
     {
         try
         {
-            using var stream = await thumbnail.OpenReadAsync();
+            using var stream = await thumbnail.OpenReadAsync().AsTask(cancellationToken);
             using var input = stream.AsStreamForRead();
             using var output = new MemoryStream();
             var buffer = new byte[16 * 1024];
@@ -337,24 +369,46 @@ internal sealed class WindowsSmtcBackend : ISmtcBackend
         internal string Id { get; }
         internal GlobalSystemMediaTransportControlsSession Session { get; set; }
 
-        internal void Attach()
+        internal bool TryAttach()
         {
             _playback = (_, _) => _raise(new SmtcBackendEvent(SmtcBackendEventKind.PlaybackChanged, Id));
             _media = (_, _) => _raise(new SmtcBackendEvent(SmtcBackendEventKind.MediaChanged, Id));
             _timeline = (_, _) => _raise(new SmtcBackendEvent(SmtcBackendEventKind.TimelineChanged, Id));
-            Session.PlaybackInfoChanged += _playback;
-            Session.MediaPropertiesChanged += _media;
-            Session.TimelinePropertiesChanged += _timeline;
+            try
+            {
+                Session.PlaybackInfoChanged += _playback;
+                Session.MediaPropertiesChanged += _media;
+                Session.TimelinePropertiesChanged += _timeline;
+                return true;
+            }
+            catch (Exception)
+            {
+                Detach();
+                return false;
+            }
         }
 
         internal void Detach()
         {
-            if (_playback is not null) Session.PlaybackInfoChanged -= _playback;
-            if (_media is not null) Session.MediaPropertiesChanged -= _media;
-            if (_timeline is not null) Session.TimelinePropertiesChanged -= _timeline;
-            _playback = null;
-            _media = null;
-            _timeline = null;
+            // 已关闭会话的 WinRT COM 对象可能已断开；逐个退订并隔离异常，避免中断整批枚举。
+            if (_playback is { } playback)
+            {
+                _playback = null;
+                try { Session.PlaybackInfoChanged -= playback; }
+                catch (Exception) { }
+            }
+            if (_media is { } media)
+            {
+                _media = null;
+                try { Session.MediaPropertiesChanged -= media; }
+                catch (Exception) { }
+            }
+            if (_timeline is { } timeline)
+            {
+                _timeline = null;
+                try { Session.TimelinePropertiesChanged -= timeline; }
+                catch (Exception) { }
+            }
         }
     }
 }

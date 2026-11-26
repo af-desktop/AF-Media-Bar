@@ -154,6 +154,8 @@ public sealed class MediaSnapshotBuilder : IMemoryPrunable, IDisposable
         EnrichmentCompleted?.Invoke();
     }
 
+    private static readonly TimeSpan SmtcReadTimeout = TimeSpan.FromSeconds(8);
+
     /// <summary>
     /// 从当前会话句柄读取不可变媒体快照；实际 COM 读取由 catalog 的宿主串行执行。
     /// Builds an immutable media snapshot from the current session handle; the catalog's host serializes the actual COM read.
@@ -172,11 +174,20 @@ public sealed class MediaSnapshotBuilder : IMemoryPrunable, IDisposable
         SmtcBackendRead? read;
         try
         {
-            read = await catalog.ReadAsync(session.Id, SmtcReadScope.All, cancellationToken);
+            // 单次读取设超时上限，防止异常播放器长期占住宿主串行闸门。
+            using var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            readTimeout.CancelAfter(SmtcReadTimeout);
+            read = await catalog.ReadAsync(session.Id, SmtcReadScope.All, readTimeout.Token);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException exception)
+        {
+            if (!_disposed)
+                _readFailures.Report(_log, "Media", $"smtc:{session.Id}", "读取 SMTC 媒体快照超时", exception);
+            return null;
         }
         catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
         {

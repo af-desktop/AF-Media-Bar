@@ -14,9 +14,9 @@ internal sealed class SmtcSessionHost : IDisposable
     private readonly Thread _thread;
     private readonly Dispatcher _dispatcher;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly CancellationTokenSource _stopCancellation = new();
     private readonly ConcurrentQueue<SmtcBackendEvent> _events = new();
     private readonly Dictionary<string, SmtcSession> _sessions = new(StringComparer.Ordinal);
-    private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private SmtcCatalogState _state = SmtcCatalogState.Initial;
     private string? _focusedSessionId;
     private int _generation;
@@ -27,14 +27,14 @@ internal sealed class SmtcSessionHost : IDisposable
     internal SmtcSessionHost(ISmtcBackend backend)
     {
         _backend = backend;
-        _backend.Changed += OnBackendChanged;
 
         Dispatcher? dispatcher = null;
+        using var ready = new ManualResetEventSlim(false);
         _thread = new Thread(() =>
         {
             dispatcher = Dispatcher.CurrentDispatcher;
             SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(dispatcher));
-            _ready.TrySetResult();
+            ready.Set();
             Dispatcher.Run();
         })
         {
@@ -43,8 +43,10 @@ internal sealed class SmtcSessionHost : IDisposable
         };
         _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();
-        _ready.Task.GetAwaiter().GetResult();
+        ready.Wait();
         _dispatcher = dispatcher ?? throw new InvalidOperationException("SMTC dispatcher was not created.");
+        // 确保 _dispatcher 就绪后再接管后端事件，避免极端早到事件撞上空 dispatcher。
+        _backend.Changed += OnBackendChanged;
     }
 
     internal event Action<SmtcCatalogState>? StateChanged;
@@ -57,55 +59,60 @@ internal sealed class SmtcSessionHost : IDisposable
     internal async Task StartAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _isStopped) != 0) return;
-        await RunAsync(async () =>
+        await RunAsync(async token =>
         {
+            // 看门狗可能已在重试间隔内通过 RestartAsync 恢复宿主；就绪后重复启动直接返回。
+            if (_state.Status == SmtcHostStatus.Ready) return;
             SetStatus(SmtcHostStatus.Starting);
             try
             {
-                await _backend.StartAsync(cancellationToken);
+                await _backend.StartAsync(token);
                 _generation++;
-                await RefreshSessionsCoreAsync(cancellationToken);
-                SetStatus(SmtcHostStatus.Ready);
+                var change = await RefreshSessionsCoreAsync(token, publish: false);
+                SetStatus(SmtcHostStatus.Ready, change);
             }
             catch
             {
-                SetStatus(SmtcHostStatus.Failed);
+                if (Volatile.Read(ref _isStopped) == 0)
+                    SetStatus(SmtcHostStatus.Failed);
                 throw;
             }
         }, cancellationToken);
     }
 
-    internal Task RestartAsync(CancellationToken cancellationToken) => RunAsync(async () =>
+    internal Task RestartAsync(CancellationToken cancellationToken) => RunAsync(async token =>
     {
         SetStatus(SmtcHostStatus.Restarting);
         try
         {
-            await _backend.StopAsync();
-            CloseAllSessions();
+            try { await _backend.StopAsync(); }
+            catch (Exception) { }
+            var closed = CloseAllSessions(publish: false);
             _generation++;
-            await _backend.StartAsync(cancellationToken);
-            await RefreshSessionsCoreAsync(cancellationToken);
-            SetStatus(SmtcHostStatus.Ready);
+            await _backend.StartAsync(token);
+            var refreshed = await RefreshSessionsCoreAsync(token, publish: false);
+            SetStatus(SmtcHostStatus.Ready, closed | refreshed);
         }
         catch
         {
-            SetStatus(SmtcHostStatus.Failed);
+            if (Volatile.Read(ref _isStopped) == 0)
+                SetStatus(SmtcHostStatus.Failed);
             throw;
         }
     }, cancellationToken);
 
     internal Task<int> GetOsSessionCountAsync(CancellationToken cancellationToken) =>
-        RunAsync(() => _backend.GetOsSessionCountAsync(cancellationToken), cancellationToken);
+        RunAsync(token => _backend.GetOsSessionCountAsync(token), cancellationToken);
 
     internal Task ForceUpdateAsync(CancellationToken cancellationToken) =>
-        RunAsync(() => RefreshSessionsCoreAsync(cancellationToken), cancellationToken);
+        RunAsync(async token => { await RefreshSessionsCoreAsync(token, publish: true); }, cancellationToken);
 
     internal Task<SmtcBackendRead?> ReadAsync(string sessionId, SmtcReadScope scope, CancellationToken cancellationToken) =>
-        RunAsync(async () =>
+        RunAsync(async token =>
         {
             if (!_sessions.TryGetValue(sessionId, out var session) || !session.IsOpen)
                 return null;
-            var read = await _backend.ReadAsync(sessionId, scope, cancellationToken);
+            var read = await _backend.ReadAsync(sessionId, scope, token);
             if (read is null)
             {
                 session.MarkPlaybackUnknown();
@@ -128,34 +135,39 @@ internal sealed class SmtcSessionHost : IDisposable
         }, cancellationToken);
 
     internal Task<bool> ExecuteAsync(string sessionId, SmtcCommand command, double? positionSeconds, CancellationToken cancellationToken) =>
-        RunAsync(async () =>
+        RunAsync(async token =>
         {
             if (!_sessions.TryGetValue(sessionId, out var session) || !session.IsOpen)
                 return false;
-            return await _backend.ExecuteAsync(sessionId, command, positionSeconds, cancellationToken);
+            return await _backend.ExecuteAsync(sessionId, command, positionSeconds, token);
         }, cancellationToken);
 
     internal Task<string?> GetFocusedSessionIdAsync(CancellationToken cancellationToken) =>
-        RunAsync(() => _backend.GetFocusedSessionIdAsync(cancellationToken), cancellationToken);
+        RunAsync(token => _backend.GetFocusedSessionIdAsync(token), cancellationToken);
 
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _isStopped, 1) != 0)
             return;
 
+        // 先取消所有在途和排队中的宿主操作，避免卡住的 WinRT 调用拖死退出闸门。
+        _stopCancellation.Cancel();
+
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
-            _dispatcher.BeginInvoke(new Action(async () =>
+            _ = _dispatcher.BeginInvoke(new Action(async () =>
             {
                 try
                 {
                     await _gate.WaitAsync();
                     try
                     {
-                        await _backend.StopAsync();
+                        try { await _backend.StopAsync(); }
+                        catch (Exception) { }
                         _backend.Changed -= OnBackendChanged;
-                        CloseAllSessions();
+                        while (_events.TryDequeue(out _)) { }
+                        CloseAllSessions(publish: false);
                         SetStatus(SmtcHostStatus.Stopped);
                     }
                     finally { _gate.Release(); }
@@ -191,42 +203,92 @@ internal sealed class SmtcSessionHost : IDisposable
         try { _thread.Join(TimeSpan.FromSeconds(2)); } catch (Exception) { }
     }
 
-    private async Task<T> RunAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken)
+    private async Task<T> RunAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _isStopped) != 0)
             return await Task.FromCanceled<T>(new CancellationToken(canceled: true));
 
+        // 由调用方和宿主侧双引用计数释放，避免快速完成时宿主先 Dispose 导致 WaitAsync 抛 ObjectDisposedException。
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _stopCancellation.Token);
+        var token = linked.Token;
+        var linkedOwners = 2;
+        var hostReleased = 0;
+        void ReleaseLinked()
+        {
+            if (Interlocked.Decrement(ref linkedOwners) == 0)
+                linked.Dispose();
+        }
+        void ReleaseHostLinked()
+        {
+            if (Interlocked.Exchange(ref hostReleased, 1) == 0)
+                ReleaseLinked();
+        }
+
         var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
-            _dispatcher.BeginInvoke(new Action(async () =>
+            var operation = _dispatcher.BeginInvoke(new Action(async () =>
             {
                 try
                 {
-                    await _gate.WaitAsync(cancellationToken);
-                    try { completion.TrySetResult(await action()); }
+                    if (Volatile.Read(ref _isStopped) != 0 || token.IsCancellationRequested)
+                    {
+                        completion.TrySetCanceled(token);
+                        return;
+                    }
+
+                    await _gate.WaitAsync(token);
+                    try
+                    {
+                        if (Volatile.Read(ref _isStopped) != 0 || token.IsCancellationRequested)
+                        {
+                            completion.TrySetCanceled(token);
+                            return;
+                        }
+
+                        completion.TrySetResult(await action(token));
+                    }
                     finally { _gate.Release(); }
                 }
-                catch (OperationCanceledException) { completion.TrySetCanceled(cancellationToken); }
+                catch (OperationCanceledException) { completion.TrySetCanceled(token); }
                 catch (Exception exception) { completion.TrySetException(exception); }
+                finally { ReleaseHostLinked(); }
             }));
+            operation.Aborted += (_, _) =>
+            {
+                completion.TrySetCanceled(token);
+                ReleaseHostLinked();
+            };
+            if (operation.Status == DispatcherOperationStatus.Aborted)
+            {
+                completion.TrySetCanceled(token);
+                ReleaseHostLinked();
+            }
         }
         catch (Exception exception)
         {
+            ReleaseHostLinked();
             completion.TrySetException(exception);
         }
 
         _ = completion.Task.ContinueWith(static task => _ = task.Exception,
             CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
-        return await completion.Task.WaitAsync(cancellationToken);
+        try
+        {
+            return await completion.Task.WaitAsync(token);
+        }
+        finally
+        {
+            ReleaseLinked();
+        }
     }
 
-    private async Task RunAsync(Func<Task> action, CancellationToken cancellationToken)
+    private async Task RunAsync(Func<CancellationToken, Task> action, CancellationToken cancellationToken)
     {
-        await RunAsync(async () =>
+        await RunAsync(async token =>
         {
-            await action();
+            await action(token);
             return true;
         }, cancellationToken);
     }
@@ -240,22 +302,27 @@ internal sealed class SmtcSessionHost : IDisposable
 
     private void SchedulePump()
     {
-        if (Interlocked.Exchange(ref _pumpScheduled, 1) != 0) return;
+        if (Volatile.Read(ref _isStopped) != 0 || Interlocked.Exchange(ref _pumpScheduled, 1) != 0) return;
         try
         {
-            _dispatcher.BeginInvoke(new Action(async () =>
+            _ = _dispatcher.BeginInvoke(new Action(async () =>
             {
                 try
                 {
-                    await _gate.WaitAsync();
-                    try { await PumpAsync(); }
+                    if (Volatile.Read(ref _isStopped) != 0) return;
+                    await _gate.WaitAsync(_stopCancellation.Token);
+                    try
+                    {
+                        if (Volatile.Read(ref _isStopped) == 0)
+                            await PumpAsync(_stopCancellation.Token);
+                    }
                     finally { _gate.Release(); }
                 }
                 catch (Exception) { }
                 finally
                 {
                     Interlocked.Exchange(ref _pumpScheduled, 0);
-                    if (!_events.IsEmpty) SchedulePump();
+                    if (Volatile.Read(ref _isStopped) == 0 && !_events.IsEmpty) SchedulePump();
                 }
             }));
         }
@@ -265,12 +332,13 @@ internal sealed class SmtcSessionHost : IDisposable
         }
     }
 
-    private async Task PumpAsync()
+    private async Task PumpAsync(CancellationToken cancellationToken)
     {
         var sessionsDirty = false;
         var focusedDirty = false;
         var playback = new HashSet<string>(StringComparer.Ordinal);
         var metadataDirty = false;
+        var timelineDirty = false;
         while (_events.TryDequeue(out var value))
         {
             switch (value.Kind)
@@ -285,61 +353,91 @@ internal sealed class SmtcSessionHost : IDisposable
                     playback.Add(id);
                     break;
                 case SmtcBackendEventKind.MediaChanged:
-                case SmtcBackendEventKind.TimelineChanged:
                     metadataDirty = true;
+                    break;
+                case SmtcBackendEventKind.TimelineChanged:
+                    timelineDirty = true;
                     break;
             }
         }
 
+        // 同批事件合并为末尾一次 Publish，并保留准确的变化掩码，避免单次突发连续推高 revision 或误武装看门狗。
+        var change = SmtcCatalogChangeKind.None;
         if (sessionsDirty)
-            await RefreshSessionsCoreAsync(CancellationToken.None);
-        if (focusedDirty)
         {
-            _focusedSessionId = await _backend.GetFocusedSessionIdAsync(CancellationToken.None);
-            Publish();
+            change |= await RefreshSessionsCoreAsync(cancellationToken, publish: false);
+            if (change == SmtcCatalogChangeKind.None)
+                change |= SmtcCatalogChangeKind.Sessions;
         }
-        foreach (var id in playback)
+        else
         {
-            if (!_sessions.TryGetValue(id, out var session)) continue;
-            var read = await _backend.ReadAsync(id, SmtcReadScope.Playback, CancellationToken.None);
-            if (read is null)
+            if (focusedDirty)
             {
-                session.MarkPlaybackUnknown();
-                continue;
+                _focusedSessionId = await _backend.GetFocusedSessionIdAsync(cancellationToken);
+                change |= SmtcCatalogChangeKind.Focused;
             }
-            if (read.Playback.IsClosed)
+
+            foreach (var id in playback)
             {
-                RemoveSession(id);
-                continue;
+                if (!_sessions.TryGetValue(id, out var session)) continue;
+                var read = await _backend.ReadAsync(id, SmtcReadScope.Playback, cancellationToken);
+                if (read is null)
+                {
+                    session.MarkPlaybackUnknown();
+                    continue;
+                }
+                if (read.Playback.IsClosed)
+                {
+                    RemoveSession(id, publish: false);
+                    change |= SmtcCatalogChangeKind.Sessions | SmtcCatalogChangeKind.SessionClosed;
+                    continue;
+                }
+                session.ApplyPlayback(read.Playback);
+                change |= SmtcCatalogChangeKind.Playback;
             }
-            session.ApplyPlayback(read.Playback);
-            Publish();
         }
-        if (metadataDirty) Publish();
+
+        if (metadataDirty) change |= SmtcCatalogChangeKind.Metadata;
+        if (timelineDirty) change |= SmtcCatalogChangeKind.Timeline;
+        if (change != SmtcCatalogChangeKind.None && Volatile.Read(ref _isStopped) == 0)
+            Publish(change);
     }
 
-    private async Task RefreshSessionsCoreAsync(CancellationToken cancellationToken)
+    private async Task<SmtcCatalogChangeKind> RefreshSessionsCoreAsync(CancellationToken cancellationToken, bool publish = true)
     {
         var discovered = await _backend.GetSessionsAsync(cancellationToken);
-        if (discovered is null) return;
+        if (discovered is null) return SmtcCatalogChangeKind.None;
+
+        var change = SmtcCatalogChangeKind.None;
         var present = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in discovered)
         {
             if (!present.Add(item.Id)) continue;
-            if (!_sessions.TryGetValue(item.Id, out var session))
+            var isNew = !_sessions.TryGetValue(item.Id, out var session);
+            if (isNew)
             {
                 session = new SmtcSession(item.Id, item.SourceAppId);
                 _sessions[item.Id] = session;
-                var initial = await _backend.ReadAsync(item.Id, SmtcReadScope.Playback, cancellationToken);
-                if (initial is not null)
+                change |= SmtcCatalogChangeKind.Sessions;
+            }
+
+            // 同步刷新所有在场会话的播放状态：覆盖同 AUMID 会话替换、事件丢失与 MarkPlaybackUnknown 的自愈。
+            var wasPlaying = session!.IsPlaying;
+            var wasKnown = session.IsPlaybackKnown;
+            var playbackRead = await _backend.ReadAsync(item.Id, SmtcReadScope.Playback, cancellationToken);
+            if (playbackRead is not null)
+            {
+                if (playbackRead.Playback.IsClosed)
                 {
-                    if (initial.Playback.IsClosed)
-                    {
-                        RemoveSession(item.Id);
-                        continue;
-                    }
-                    session.ApplyPlayback(initial.Playback);
+                    RemoveSession(item.Id, publish: false);
+                    present.Remove(item.Id);
+                    if (!isNew) change |= SmtcCatalogChangeKind.Sessions | SmtcCatalogChangeKind.SessionClosed;
+                    continue;
                 }
+
+                session.ApplyPlayback(playbackRead.Playback);
+                if (wasPlaying != session.IsPlaying || wasKnown != session.IsPlaybackKnown)
+                    change |= SmtcCatalogChangeKind.Playback;
             }
         }
 
@@ -347,44 +445,66 @@ internal sealed class SmtcSessionHost : IDisposable
         {
             _sessions[id].MarkClosed();
             _sessions.Remove(id);
+            change |= SmtcCatalogChangeKind.Sessions | SmtcCatalogChangeKind.SessionClosed;
         }
 
-        _focusedSessionId = await _backend.GetFocusedSessionIdAsync(cancellationToken);
-        Publish();
+        var focused = await _backend.GetFocusedSessionIdAsync(cancellationToken);
+        if (!string.Equals(_focusedSessionId, focused, StringComparison.Ordinal))
+        {
+            _focusedSessionId = focused;
+            change |= SmtcCatalogChangeKind.Focused;
+        }
+
+        if (publish) Publish(change == SmtcCatalogChangeKind.None ? SmtcCatalogChangeKind.Playback : change);
+        return change;
     }
 
-    private void CloseAllSessions()
+    private SmtcCatalogChangeKind CloseAllSessions(bool publish = true)
     {
+        var hadSessions = _sessions.Count > 0;
         foreach (var session in _sessions.Values)
             session.MarkClosed();
         _sessions.Clear();
         _focusedSessionId = null;
-        Publish();
+        var change = hadSessions
+            ? SmtcCatalogChangeKind.Sessions | SmtcCatalogChangeKind.SessionClosed
+            : SmtcCatalogChangeKind.None;
+        if (publish) Publish(change);
+        return change;
     }
 
-    private void RemoveSession(string sessionId)
+    private void RemoveSession(string sessionId, bool publish = true)
     {
         try { _backend.ReleaseSession(sessionId); }
         catch (Exception) { }
-        if (_sessions.Remove(sessionId, out var session))
-            session.MarkClosed();
-        Publish();
+        var removed = _sessions.Remove(sessionId, out var session);
+        if (removed)
+            session!.MarkClosed();
+        if (publish)
+            Publish(removed ? SmtcCatalogChangeKind.Sessions | SmtcCatalogChangeKind.SessionClosed : SmtcCatalogChangeKind.None);
     }
 
-    private void SetStatus(SmtcHostStatus status)
+    private void SetStatus(SmtcHostStatus status, SmtcCatalogChangeKind extraChange = SmtcCatalogChangeKind.None)
     {
-        _state = _state with { Status = status, Revision = ++_revision, FocusedSessionId = _focusedSessionId };
+        _state = new SmtcCatalogState(
+            _generation,
+            ++_revision,
+            status,
+            _focusedSessionId,
+            _sessions.Values.Where(session => session.IsOpen).ToArray(),
+            SmtcCatalogChangeKind.Status | extraChange);
         RaiseState();
     }
 
-    private void Publish()
+    private void Publish(SmtcCatalogChangeKind change)
     {
         _state = new SmtcCatalogState(
             _generation,
             ++_revision,
             _state.Status,
             _focusedSessionId,
-            _sessions.Values.Where(session => session.IsOpen).ToArray());
+            _sessions.Values.Where(session => session.IsOpen).ToArray(),
+            change);
         RaiseState();
     }
 

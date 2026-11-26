@@ -49,6 +49,7 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
     private int _controlSelectionRevision;
     private bool _snapshotBuildInFlight;
     private bool _snapshotBuildPending;
+    private int _consecutiveNullSnapshotBuilds;
     private int _refreshQueued;
     private readonly CancellationTokenSource _snapshotBuildCancellation = new();
     private readonly BrowserMissingPresentationState _browserPresentation = new();
@@ -131,7 +132,7 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
     {
         for (var attempt = 0; attempt < 3; attempt++)
         {
-            if (_isDisposed) return;
+            if (_isDisposed || _catalog.IsStarted) return;
             try
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_snapshotBuildCancellation.Token);
@@ -328,12 +329,18 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
     private void OnCatalogStateChanged(SmtcCatalogState state)
     {
         if (_isDisposed) return;
-        // 事件在宿主线程触发；只做计数，把状态写入和看门狗武装投递回 UI。
-        Interlocked.Increment(ref _mediaRevision);
-        _dispatcher.BeginInvoke(() =>
+        // 仅在目录/元数据/状态变化时推进 revision，避免高频时间轴或焦点事件冲掉在途封面读取。
+        const SmtcCatalogChangeKind revisionMask = SmtcCatalogChangeKind.Status | SmtcCatalogChangeKind.Sessions |
+                                                   SmtcCatalogChangeKind.SessionClosed | SmtcCatalogChangeKind.Metadata;
+        if ((state.LastChange & revisionMask) != 0)
+            Interlocked.Increment(ref _mediaRevision);
+
+        var armReconcile = state.LastChange.HasFlag(SmtcCatalogChangeKind.SessionClosed);
+        _ = _dispatcher.BeginInvoke(() =>
         {
             if (_isDisposed) return;
-            _reconcile.Arm();
+            if (armReconcile)
+                _reconcile.Arm();
             ScheduleSessionsRefresh();
         }, DispatcherPriority.Normal);
     }
@@ -520,6 +527,7 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
             {
                 _controlSelectionKey = selected?.Key;
                 _controlSelectionRevision++;
+                _consecutiveNullSnapshotBuilds = 0;
             }
             _selectedSessionKey = selected?.SessionKey;
             var session = _lastSessions.FirstOrDefault(item => item.Id == _selectedSessionKey);
@@ -568,13 +576,21 @@ public sealed class MediaSessionService : IDisposable, IMediaSourceCatalog
 
             if (snapshot is not null)
             {
+                _consecutiveNullSnapshotBuilds = 0;
                 Publish(snapshot);
                 (_readFailures ??= new()).Recover(_log, "Media", "build", "媒体快照构建已恢复");
                 TryRequestFallbackLyrics();
             }
-            else
+            else if (!_catalog.IsStarted || _catalog.FindSession(sessionKey) is null)
             {
-                // 读取失败/会话已消失时不能继续保留 connected 的旧帧，否则看门狗会失去探测条件。
+                // 会话已不在目录中：走常规目录刷新以经过选择器和浏览器 3 秒保留，不绕过宽限直接断连。
+                _consecutiveNullSnapshotBuilds = 0;
+                ScheduleSessionsRefresh();
+            }
+            else if (++_consecutiveNullSnapshotBuilds >= 2)
+            {
+                // 连续两次读取失败再断连：避免切歌瞬间单次空读闪烁，同时确保持续失效时看门狗能介入。
+                _consecutiveNullSnapshotBuilds = 0;
                 Publish(MediaSnapshot.Disconnected);
             }
         }

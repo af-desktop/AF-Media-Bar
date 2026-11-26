@@ -4,7 +4,6 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Windows.Media.Imaging;
-using Windows.Storage.Streams;
 
 namespace AFMediaBar.Classes.Utils;
 
@@ -17,30 +16,6 @@ internal static class ArtworkLoader
     private const int MaxThumbnailSize = 256;
     private const int CacheEntryLimit = 5;
     private static readonly LruCache<int, BitmapImage> ThumbnailCache = new(CacheEntryLimit);
-
-    /// <summary>
-    /// 读取缩略图内容并计算稳定哈希，用于缓存键。
-    /// Reads thumbnail content and computes a stable hash for cache keys.
-    /// </summary>
-    /// <param name="thumbnail">缩略图流引用。/ Thumbnail stream reference.</param>
-    /// <returns>内容哈希；读取失败时返回对象哈希。/ Content hash, or the object hash when reading fails.</returns>
-    internal static int GetStableThumbnailHash(IRandomAccessStreamReference thumbnail)
-    {
-        if (thumbnail == null)
-            return 0;
-
-        try
-        {
-            using Stream stream = thumbnail.OpenReadAsync().GetAwaiter().GetResult().AsStreamForRead();
-            using SHA256 sha256 = SHA256.Create();
-            byte[] hashBytes = sha256.ComputeHash(stream);
-            return BitConverter.ToInt32(hashBytes, 0);
-        }
-        catch (Exception)
-        {
-            return thumbnail.GetHashCode();
-        }
-    }
 
     /// <summary>
     /// 从已读取的封面字节加载并缓存缩略图；后台线程解码，返回冻结位图。
@@ -69,11 +44,15 @@ internal static class ArtworkLoader
             }
             catch (IOException exception) when (exception.InnerException is COMException { HResult: unchecked((int)0x88982F72) })
             {
+                // QQ Music can publish valid JPEG pixels with truncated EXIF metadata. WIC's color-context read
+                // then fails with WINCODEC_ERR_STREAMREAD; retry without color management before dropping artwork.
                 image = DecodeThumbnail(data, maxThumbnailSize, BitmapCreateOptions.IgnoreColorProfile);
             }
         }
         catch (Exception exception) when (exception is IOException or COMException or NotSupportedException or FileFormatException)
         {
+            // Artwork is optional: a broken player stream or image/color profile must not discard the media snapshot.
+            // Failed loads are not cached, so a later refresh can retry the same artwork.
             return null;
         }
 
@@ -104,65 +83,8 @@ internal static class ArtworkLoader
         image.DecodePixelWidth = maxThumbnailSize;
         image.StreamSource = stream;
         image.EndInit();
-        image.Freeze();
-        return image;
-    }
-
-
-    /// <summary>
-    /// 同步加载并缓存 WinRT 缩略图；仅保留给旧调用方，SMTC 主链路使用字节入口。
-    /// Synchronously loads and caches a WinRT thumbnail; kept for legacy callers, the SMTC path uses the bytes overload.
-    /// </summary>
-    internal static BitmapImage? GetThumbnail(
-        IRandomAccessStreamReference? thumbnail,
-        int maxThumbnailSize = MaxThumbnailSize)
-    {
-        if (thumbnail == null)
-            return null;
-
-        var hashCode = GetStableThumbnailHash(thumbnail);
-        if (hashCode == 0)
-            return null;
-
-        if (ThumbnailCache.TryGetValue(hashCode, out var cachedImage) && cachedImage != null)
-            return cachedImage;
-
-        BitmapImage image;
-        try
-        {
-            try
-            {
-                image = DecodeThumbnail(thumbnail, maxThumbnailSize, BitmapCreateOptions.None);
-            }
-            catch (IOException exception) when (exception.InnerException is COMException { HResult: unchecked((int)0x88982F72) })
-            {
-                // QQ Music can publish valid JPEG pixels with truncated EXIF metadata. WIC's color-context read
-                // then fails with WINCODEC_ERR_STREAMREAD; retry without color management before dropping artwork.
-                image = DecodeThumbnail(thumbnail, maxThumbnailSize, BitmapCreateOptions.IgnoreColorProfile);
-            }
-        }
-        catch (Exception exception) when (exception is IOException or COMException or NotSupportedException or FileFormatException)
-        {
-            // Artwork is optional: a broken player stream or image/color profile must not discard the media snapshot.
-            // Failed loads are not cached, so a later refresh can retry the same artwork.
-            return null;
-        }
-
-        ThumbnailCache.Set(hashCode, image);
-        return image;
-    }
-
-    private static BitmapImage DecodeThumbnail(
-        IRandomAccessStreamReference thumbnail, int maxThumbnailSize, BitmapCreateOptions options)
-    {
-        using var imageStream = thumbnail.OpenReadAsync().GetAwaiter().GetResult().AsStreamForRead();
-        BitmapImage image = new();
-        image.BeginInit();
-        image.CacheOption = BitmapCacheOption.OnLoad;
-        image.CreateOptions = options;
-        image.DecodePixelWidth = maxThumbnailSize;
-        image.StreamSource = imageStream;
-        image.EndInit();
+        // 解码完成后解除流引用，避免冻结位图长期持有原始压缩字节数组。
+        image.StreamSource = null;
         image.Freeze();
         return image;
     }
