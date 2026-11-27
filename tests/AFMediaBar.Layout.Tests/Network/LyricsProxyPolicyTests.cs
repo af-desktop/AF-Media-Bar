@@ -79,14 +79,30 @@ public sealed class LyricsProxyPolicyTests
         Assert.AreEqual("405", result.Detail);
     }
 
-    private sealed class EndpointRecorder : HttpMessageHandler
+    [TestMethod]
+    public async Task SodaMusicEmpty200ResponseIsReportedAsUnreachable()
+    {
+        using var handler = new EndpointRecorder(HttpStatusCode.OK, string.Empty);
+        using var http = new HttpClient(handler);
+        var tester = new LyricsSourceTester(http);
+
+        var result = await tester.TestAsync(LyricsSourceCatalog.SodaMusic, CancellationToken.None);
+
+        Assert.IsFalse(result.Reachable);
+        Assert.AreEqual("empty", result.Detail);
+    }
+
+    private sealed class EndpointRecorder(HttpStatusCode status = HttpStatusCode.MethodNotAllowed, string? body = null) : HttpMessageHandler
     {
         public Uri? Destination { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Destination = request.RequestUri;
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.MethodNotAllowed));
+            var response = new HttpResponseMessage(status);
+            if (body is not null)
+                response.Content = new StringContent(body);
+            return Task.FromResult(response);
         }
     }
 }

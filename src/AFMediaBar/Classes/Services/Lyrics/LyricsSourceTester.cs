@@ -1,5 +1,6 @@
 // 用户主动检查歌词 API 的 HTTP 可达性，使用实际取词所用的代理策略。
 using System.Net.Http;
+using AFMediaBar.Classes.Services.Lyrics;
 
 namespace AFMediaBar.Classes.Services;
 
@@ -22,6 +23,15 @@ public sealed class LyricsSourceTester
         {
             using var response = await _client.GetAsync(endpoint, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
                 .ConfigureAwait(false);
+            if (sourceId == LyricsSourceCatalog.SodaMusic && response.IsSuccessStatusCode)
+            {
+                if (response.Content.Headers.ContentLength == 0)
+                    return new(false, "empty");
+                await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+                var probe = new byte[1];
+                if (await stream.ReadAsync(probe, timeout.Token).ConfigureAwait(false) == 0)
+                    return new(false, "empty");
+            }
             return new(true, ((int)response.StatusCode).ToString());
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
