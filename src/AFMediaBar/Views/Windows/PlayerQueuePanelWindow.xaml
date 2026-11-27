@@ -22,7 +22,7 @@
             <!-- 与任务栏设备弹窗使用同一套行按钮反馈：透明底、圆角、ControlFill 系列 hover/pressed。 -->
             <Style x:Key="QueueItemButtonStyle" TargetType="Button">
                 <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
-                <Setter Property="Padding" Value="8,6,14,6" />
+                <Setter Property="Padding" Value="8,4,14,4" />
                 <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                 <Setter Property="Background" Value="Transparent" />
                 <Setter Property="BorderThickness" Value="0" />
@@ -151,7 +151,8 @@
                                     <Button Style="{StaticResource QueueItemButtonStyle}"
                                             Click="QueueItem_Click"
                                             AutomationProperties.Name="{Binding AutomationName}">
-                                        <Grid Loaded="QueueItem_Loaded"
+                                        <Grid Height="36" VerticalAlignment="Center"
+                                              Loaded="QueueItem_Loaded"
                                               Unloaded="QueueItem_Unloaded"
                                               DataContextChanged="QueueItem_DataContextChanged">
                                             <Grid.ColumnDefinitions>
@@ -164,9 +165,10 @@
                                                        VerticalAlignment="Center" Margin="0,0,4,0"
                                                        Typography.NumeralAlignment="Tabular" />
                                             <Border Grid.Column="1" Width="32" Height="32" CornerRadius="5"
+                                                    VerticalAlignment="Center"
                                                     Margin="0,0,8,0" ClipToBounds="True"
                                                     Background="{DynamicResource SubtleFillColorSecondaryBrush}">
-                                                <Grid>
+                                                <Grid Width="32" Height="32">
                                                     <ui:SymbolIcon Symbol="MusicNote220" FontSize="14"
                                                                    Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                                                    HorizontalAlignment="Center" VerticalAlignment="Center" />
@@ -175,12 +177,16 @@
                                                            TargetUpdated="QueueArtworkImage_TargetUpdated"
                                                            Opacity="0" Stretch="UniformToFill"
                                                            RenderOptions.BitmapScalingMode="HighQuality" />
-                                                    <ui:ProgressRing Width="14" Height="14"
-                                                                     IsIndeterminate="True"
-                                                                     IsHitTestVisible="False"
-                                                                     Foreground="{DynamicResource TextFillColorPrimaryBrush}"
-                                                                     HorizontalAlignment="Center" VerticalAlignment="Center"
-                                                                     Visibility="{Binding IsArtworkLoading, Converter={StaticResource QueueVisibility}}" />
+                                                    <Canvas Width="14" Height="14"
+                                                            HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                            UseLayoutRounding="False" SnapsToDevicePixels="False"
+                                                            IsHitTestVisible="False"
+                                                            Visibility="{Binding IsArtworkLoading, Converter={StaticResource QueueVisibility}}">
+                                                        <ui:ProgressRing Width="14" Height="14"
+                                                                         IsIndeterminate="True"
+                                                                         IsHitTestVisible="False"
+                                                                         Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                                    </Canvas>
                                                 </Grid>
                                             </Border>
                                             <StackPanel Grid.Column="2" Margin="0,0,8,0" VerticalAlignment="Center">

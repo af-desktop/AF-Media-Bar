@@ -65,6 +65,43 @@ public sealed class PlayerQueueProjectionTests
         Assert.IsTrue(viewModel.IsEmpty);
     }
 
+    [TestMethod]
+    public async Task StateUpdateWithSameQueueRevisionDoesNotRebuildItemsOrNotifyItemsChanged()
+    {
+        var companion = new FakePlayerCompanion();
+        var initial = new PlayerCompanionSnapshot(
+            PlayerCompanionConnectionState.Connected,
+            new PlayerCompanionCapabilities(true, true, true, false, false, false, false),
+            1,
+            "1.12.4",
+            new PlayerCompanionPlayer(PlayerCompanionPlaybackStatus.Playing, 0, "track-a", false,
+                MediaRepeatMode.Off, 0, 0, 0, false),
+            [Track("track-a"), Track("track-b")],
+            [0, 1],
+            7,
+            PlayerCompanionError.None,
+            null,
+            false,
+            DateTimeOffset.UtcNow);
+        companion.SetCurrent(initial);
+
+        using var viewModel = new PlayerQueueViewModel(companion);
+        await viewModel.ActivateAsync();
+        var initialItems = viewModel.Items;
+        var notified = new List<string?>();
+        viewModel.PropertyChanged += (_, e) => notified.Add(e.PropertyName);
+
+        companion.SetCurrent(initial with
+        {
+            Player = initial.Player! with { Index = 1, CurrentTrackId = "track-b" }
+        });
+
+        Assert.AreSame(initialItems, viewModel.Items, "队列版本号未变时不得重建列表项集合。");
+        Assert.IsFalse(notified.Contains(nameof(PlayerQueueViewModel.Items)));
+        Assert.IsFalse(notified.Contains(string.Empty));
+        Assert.AreEqual("track-b", viewModel.CurrentItem!.TrackId);
+    }
+
     private static PlayerCompanionTrack Track(string id) => new(
         id,
         id,

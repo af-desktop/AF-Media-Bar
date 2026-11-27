@@ -254,7 +254,7 @@ public partial class PlayerQueueViewModel : ObservableObject, IDisposable
         }
 
         IsLoading = false;
-        UpdateSnapshot(_companion.Current, forceQueue: true);
+        UpdateSnapshot(_companion.Current, forceQueue: false);
     }
 
     private void OnCompanionChanged(object? sender, PlayerCompanionSnapshot snapshot)
@@ -298,7 +298,14 @@ public partial class PlayerQueueViewModel : ObservableObject, IDisposable
 
         UpdateStatus(snapshot);
         UpdateCommandState();
-        OnPropertyChanged(string.Empty);
+        NotifyDerivedProperties();
+    }
+
+    private void NotifyDerivedProperties()
+    {
+        OnPropertyChanged(nameof(TitleText));
+        OnPropertyChanged(nameof(IsEmpty));
+        OnPropertyChanged(nameof(HasStatusText));
     }
 
     private void RebuildItems(PlayerCompanionSnapshot snapshot)
@@ -383,7 +390,7 @@ public partial class PlayerQueueViewModel : ObservableObject, IDisposable
         CanRetry = true;
         IsLoading = false;
         StatusText = Translations.Get(PlayerCompanionErrorPresentation.ResourceKey(error));
-        OnPropertyChanged(string.Empty);
+        NotifyDerivedProperties();
     }
 
     private void ShowCommandError(PlayerCompanionError error)
@@ -393,7 +400,7 @@ public partial class PlayerQueueViewModel : ObservableObject, IDisposable
             PlayerCompanionError.Timeout or PlayerCompanionError.Busy;
         IsLoading = false;
         StatusText = Translations.Get(PlayerCompanionErrorPresentation.ResourceKey(error));
-        OnPropertyChanged(string.Empty);
+        NotifyDerivedProperties();
     }
 
     private bool IsActive(CancellationToken token) =>
