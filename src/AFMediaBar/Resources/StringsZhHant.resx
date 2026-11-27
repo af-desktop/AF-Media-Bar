@@ -1481,7 +1481,7 @@
     <value>Apple Music 原名取詞</value>
   </data>
   <data name="Lyrics.Row.AppleMusicOriginalNames.Description" xml:space="preserve">
-    <value>Apple Music 未找到可靠歌詞時，向 Apple 曲庫查詢原名再取詞；僅預設規則生效，預設開啟。</value>
+    <value>Apple Music 播放時向 Apple 曲庫還原原名再查詢歌詞，可大幅提高外文譯名曲目的比對正確率；預設與手動規則皆生效，預設開啟。</value>
   </data>
   <data name="Lyrics.Row.SecondLine.Description" xml:space="preserve">
     <value>設定第二行顯示內容；缺少時嘗試下一項。</value>

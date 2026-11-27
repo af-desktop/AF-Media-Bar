@@ -1391,7 +1391,7 @@
     <value>Tên gốc cho Apple Music</value>
   </data>
   <data name="Lyrics.Row.AppleMusicOriginalNames.Description" xml:space="preserve">
-    <value>Khi không tìm được lời phù hợp cho Apple Music, tra tên gốc trong kho nhạc của Apple rồi tìm lại; chỉ áp dụng với quy tắc mặc định, mặc định bật.</value>
+    <value>Tra tên gốc trong kho nhạc Apple khi phát từ Apple Music để tăng độ chính xác tìm lời cho bài hát bị dịch tên; áp dụng cho cả quy tắc mặc định và thủ công, mặc định bật.</value>
   </data>
   <data name="Lyrics.Row.Local.Title" xml:space="preserve">
     <value>Lời bài hát cục bộ</value>

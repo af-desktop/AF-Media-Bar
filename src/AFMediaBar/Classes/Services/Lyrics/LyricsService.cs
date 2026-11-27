@@ -132,20 +132,23 @@ public sealed class LyricsService
     }
 
     /// <summary>
-    /// 默认规则、Apple Music 来源、开关开启、歌手不为空且至少启用一个在线来源时，才解析原名。
+    /// Apple Music 来源、开关开启、歌手不为空且至少启用一个在线来源时，才解析原名（默认规则与手动规则共用）。
     /// 歌手为空时校验不可能通过，Apple Music 加载下一首时的「Connecting…」占位也因此不会请求曲库。
     /// </summary>
     private bool UsesOriginalNames(LyricsRequest request, LyricsSourceSettings settings, IReadOnlyList<ILyricsProvider> active) =>
-        _originalNames is not null && settings.Rule == LyricsSourceRule.Default && settings.AppleMusicOriginalNamesEnabled &&
+        _originalNames is not null && settings.AppleMusicOriginalNamesEnabled &&
         active.Count > 0 && !string.IsNullOrWhiteSpace(request.Artist) && AppleMusicCatalogPolicy.IsAppleMusic(request.PlaybackSourceId);
 
     /// <summary>
-    /// Apple Music 的默认规则取词：本地阶段与首轮在线照旧；首轮不可靠时把译名还原为原名再取一轮，解析与第二轮都放进在线阶段，
-    /// 与备用源并行，共用一个 deadline。保守模式的本地兜底移到两轮之后，一次扫描同时匹配两组名称。
+    /// Apple Music 取词：默认规则走首轮 + 原名并行第二轮；手动规则先解析原名（最多 2 秒），成功用原名跑一次手动链，
+    /// 失败沿用原名称跑一次，不跑第二轮也不比较两轮分数；本地歌词均在同一份目录清单上匹配两组名称。
     /// </summary>
     private async Task<LyricsResult?> GetAppleMusicLyricsAsync(LyricsRequest request, LyricsSourceSettings settings,
         IReadOnlyList<ILyricsProvider> active, LyricsRequestLog trace, CancellationToken cancellationToken)
     {
+        if (settings.Rule == LyricsSourceRule.Manual)
+            return await GetManualAppleMusicLyricsAsync(request, settings, active, trace, cancellationToken).ConfigureAwait(false);
+
         var local = settings.LocalEnabled && _localProvider is { } provider ? new LocalLookup(provider) : null;
         LyricsResult? localFirst = null;
         if (local is { } firstLocal && !settings.LocalFallbackOnly)
@@ -164,8 +167,56 @@ public sealed class LyricsService
         var picked = AppleMusicCatalogPolicy.Pick(new(rounds.First, localFirst, rounds.SecondOnline, rounds.SecondLocal));
         if (local is not { } fallbackLocal || !settings.LocalFallbackOnly || IsAvailable(picked)) return picked;
 
-        // 保守模式：两轮在线都没有歌词才读本地；有佐证的优先，同级时 SMTC 名优先，之后才轮到确认无歌词。
-        var original = rounds.Original;
+        return await MatchConservativeLocalAsync(fallbackLocal, request, rounds.Original, picked, trace, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<LyricsResult?> GetManualAppleMusicLyricsAsync(LyricsRequest request, LyricsSourceSettings settings,
+        IReadOnlyList<ILyricsProvider> active, LyricsRequestLog trace, CancellationToken cancellationToken)
+    {
+        var local = settings.LocalEnabled && _localProvider is { } provider ? new LocalLookup(provider) : null;
+        LyricsResult? localFirst = null;
+        if (local is { } firstLocal && !settings.LocalFallbackOnly)
+        {
+            localFirst = await TryProviderAsync(firstLocal.SourceName, token => firstLocal.MatchAsync(request, token),
+                _perSourceBudget, cancellationToken, trace).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (AppleMusicCatalogPolicy.IsCorroborated(localFirst)) return localFirst;
+        }
+
+        var original = await ResolveOriginalAsync(request, _originalNameBudget, cancellationToken, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        var restored = original is null ? null : request with
+        {
+            Title = original.Title,
+            Artist = original.Artist,
+            Album = original.Album,
+            DurationSeconds = AppleMusicCatalogPolicy.SecondRoundDuration(request.DurationSeconds, original.DurationSeconds)
+        };
+
+        LyricsResult? localRestored = null;
+        if (restored is not null && local is { CanMatchAgain: true } secondLocal && !settings.LocalFallbackOnly)
+        {
+            localRestored = await TryProviderAsync(secondLocal.SourceName, token => secondLocal.MatchAsync(restored, token),
+                _perSourceBudget, cancellationToken, trace).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (AppleMusicCatalogPolicy.IsCorroborated(localRestored)) return localRestored;
+        }
+
+        var online = await GetManualLyricsAsync(restored ?? request, active, settings, trace, cancellationToken).ConfigureAwait(false);
+        if (local is { } fallbackLocal && settings.LocalFallbackOnly && !IsAvailable(online))
+            return await MatchConservativeLocalAsync(fallbackLocal, request, restored, online, trace, cancellationToken).ConfigureAwait(false);
+
+        var localCandidate = IsAvailable(localRestored) ? localRestored : localFirst;
+        if (localCandidate is not null && IsAvailable(localCandidate) && ShouldPreferLocal(localCandidate, online))
+            return localCandidate;
+
+        return online;
+    }
+
+    private async Task<LyricsResult?> MatchConservativeLocalAsync(LocalLookup fallbackLocal, LyricsRequest request,
+        LyricsRequest? original, LyricsResult? onlineFallback, LyricsRequestLog trace, CancellationToken cancellationToken)
+    {
+        // 保守模式：在线没有歌词才读本地；有佐证的优先，同级时 SMTC 名优先，之后才轮到确认无歌词。
         var fallback = await TryProviderAsync(fallbackLocal.SourceName, async token =>
         {
             var current = await fallbackLocal.MatchAsync(request, token).ConfigureAwait(false);
@@ -174,7 +225,7 @@ public sealed class LyricsService
             return AppleMusicCatalogPolicy.IsCorroborated(restored) || !IsAvailable(current) ? restored : current;
         }, _perSourceBudget, cancellationToken, trace).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
-        return IsAvailable(fallback) ? fallback : picked;
+        return IsAvailable(fallback) ? fallback : onlineFallback;
     }
 
     /// <summary>在线阶段两轮的结果；第二轮未运行、未解析出原名或被提前结束时对应项为 null。</summary>

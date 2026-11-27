@@ -336,7 +336,6 @@ public sealed class AppleMusicOriginalNamesTests
     [DataRow("SwitchOff")]
     [DataRow("AllSourcesOff")]
     [DataRow("EmptyArtist")]
-    [DataRow("ManualRule")]
     public async Task NoCatalogRequestOutsideTheTrigger(string scenario)
     {
         // EmptyArtist：Apple Music 加载下一首时 SMTC 先报「Connecting…」且歌手为空。
@@ -350,8 +349,6 @@ public sealed class AppleMusicOriginalNamesTests
             SettingsManager.Current.LyricsSource = LyricsSourceSettings.Default with { AppleMusicOriginalNamesEnabled = false };
         if (scenario == "AllSourcesOff")
             SettingsManager.Current.LyricsSource = new LyricsSourceSettings([]);
-        if (scenario == "ManualRule")
-            SettingsManager.Current.LyricsSource = LyricsSourceSettings.Default with { Rule = LyricsSourceRule.Manual };
         var preferred = new Source(LyricsSourceCatalog.QQMusic,
             (_, _) => Task.FromResult<LyricsResult?>(scenario == "ReliableFirstRound" ? Online("QQ", 90) : null));
         var catalog = Matasaburo();
@@ -361,6 +358,116 @@ public sealed class AppleMusicOriginalNamesTests
         await Service(resolver, null, preferred).GetLyricsAsync(request, CancellationToken.None);
 
         Assert.AreEqual(0, catalog.Calls);
+    }
+
+    [DataTestMethod]
+    [DataRow(LyricsSourceAttemptMode.Sequential, LyricsSourceResultMode.Ordered)]
+    [DataRow(LyricsSourceAttemptMode.Parallel, LyricsSourceResultMode.FirstAvailable)]
+    [DataRow(LyricsSourceAttemptMode.Parallel, LyricsSourceResultMode.Ordered)]
+    public async Task ManualRuleResolvesOriginalNameFirstAndRunsSingleManualPass(
+        LyricsSourceAttemptMode attemptMode,
+        LyricsSourceResultMode resultMode)
+    {
+        SettingsManager.Current.LyricsSource = LyricsSourceSettings.Default with
+        {
+            EnabledSourceIds = [LyricsSourceCatalog.QQMusic, LyricsSourceCatalog.NetEase],
+            PrioritySourceIds = [LyricsSourceCatalog.QQMusic, LyricsSourceCatalog.NetEase],
+            Rule = LyricsSourceRule.Manual,
+            AttemptMode = attemptMode,
+            ResultMode = resultMode,
+            AppleMusicOriginalNamesEnabled = true
+        };
+        var seenTitles = new List<string>();
+        var first = new Source(LyricsSourceCatalog.QQMusic, async (request, token) =>
+        {
+            lock (seenTitles) seenTitles.Add("QQ:" + request.Title);
+            if (attemptMode == LyricsSourceAttemptMode.Parallel && resultMode == LyricsSourceResultMode.FirstAvailable)
+                await Task.Delay(120, token);
+            return request.Title == "又三郎" ? Online("QQ", 60) : null;
+        });
+        var second = new Source(LyricsSourceCatalog.NetEase, (request, _) =>
+        {
+            lock (seenTitles) seenTitles.Add("NE:" + request.Title);
+            return Task.FromResult<LyricsResult?>(request.Title == "又三郎" ? Online("NE", 95) : null);
+        });
+        var catalog = Matasaburo();
+        using var client = new HttpClient(catalog);
+        using var resolver = new AppleMusicOriginalMetadataResolver(null, client, new TestClock());
+
+        var result = await Service(resolver, null, first, second).GetLyricsAsync(_smtc, CancellationToken.None);
+
+        Assert.IsNotNull(result);
+        var expectedSource = attemptMode == LyricsSourceAttemptMode.Parallel && resultMode == LyricsSourceResultMode.FirstAvailable
+            ? "NE"
+            : "QQ";
+        Assert.AreEqual(expectedSource, result.Source);
+        Assert.IsTrue(seenTitles.All(entry => entry.EndsWith(":又三郎", StringComparison.Ordinal)), "手动规则解析成功后只应使用原名跑一次，不跑第二轮。");
+    }
+
+    [TestMethod]
+    public async Task ManualRuleFallsBackToOriginalRequestWhenCatalogTimesOutOrFails()
+    {
+        SettingsManager.Current.LyricsSource = LyricsSourceSettings.Default with
+        {
+            EnabledSourceIds = [LyricsSourceCatalog.QQMusic],
+            PrioritySourceIds = [LyricsSourceCatalog.QQMusic],
+            Rule = LyricsSourceRule.Manual,
+            AttemptMode = LyricsSourceAttemptMode.Sequential,
+            ResultMode = LyricsSourceResultMode.Ordered,
+            AppleMusicOriginalNamesEnabled = true
+        };
+        var seen = new List<string>();
+        var qq = new Source(LyricsSourceCatalog.QQMusic, (request, _) =>
+        {
+            seen.Add(request.Title);
+            return Task.FromResult<LyricsResult?>(Online("QQ", 70));
+        });
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stuck = Hanging(cancelled);
+        using var client = new HttpClient(stuck);
+        using var resolver = new AppleMusicOriginalMetadataResolver(null, client, new TestClock());
+        var service = new LyricsService(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(4), TimeSpan.FromMilliseconds(80), null, resolver, qq);
+
+        var result = await service.GetLyricsAsync(_smtc, CancellationToken.None);
+
+        Assert.IsNotNull(result);
+        CollectionAssert.AreEqual(new[] { _smtc.Title }, seen);
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [TestMethod]
+    public async Task ManualRuleConservativeLocalMatchesBothNamesOnSingleScan()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "afmb-am-manual-local-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "ヨルシカ - 又三郎.lrc"), "[ar:ヨルシカ]\n[ti:又三郎]\n[00:01.00]本地原名歌词");
+            SettingsManager.Current.LyricsSource = LyricsSourceSettings.Default with
+            {
+                EnabledSourceIds = [LyricsSourceCatalog.QQMusic],
+                PrioritySourceIds = [LyricsSourceCatalog.QQMusic],
+                Rule = LyricsSourceRule.Manual,
+                AttemptMode = LyricsSourceAttemptMode.Sequential,
+                ResultMode = LyricsSourceResultMode.Ordered,
+                AppleMusicOriginalNamesEnabled = true,
+                LocalEnabled = true,
+                LocalFallbackOnly = true,
+                LocalFolders = [dir]
+            };
+            var qq = new Source(LyricsSourceCatalog.QQMusic, (_, _) => Task.FromResult<LyricsResult?>(null));
+            var catalog = Matasaburo();
+            using var client = new HttpClient(catalog);
+            using var resolver = new AppleMusicOriginalMetadataResolver(null, client, new TestClock());
+            var local = new LocalFileLyricsProvider();
+
+            var result = await Service(resolver, local, qq).GetLyricsAsync(_smtc, CancellationToken.None);
+
+            Assert.IsNotNull(result);
+            Assert.AreEqual(LyricsSourceCatalog.LocalFile, result.Source);
+            Assert.AreEqual("本地原名歌词", result.Document.Lines[0].Text);
+        }
+        finally { Directory.Delete(dir, true); }
     }
 
     [TestMethod]

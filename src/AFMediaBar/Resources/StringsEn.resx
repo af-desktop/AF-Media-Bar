@@ -1481,7 +1481,7 @@
     <value>Original titles for Apple Music</value>
   </data>
   <data name="Lyrics.Row.AppleMusicOriginalNames.Description" xml:space="preserve">
-    <value>When no reliable lyrics are found for Apple Music, look up the original title in Apple's catalog and search again. Default rules only; on by default.</value>
+    <value>Look up original titles in Apple's catalog when playing from Apple Music to improve lyric matching for translated titles. Applies to both default and manual rules; on by default.</value>
   </data>
   <data name="Lyrics.Row.SecondLine.Description" xml:space="preserve">
     <value>Choose the second line; if unavailable, try the next option.</value>
