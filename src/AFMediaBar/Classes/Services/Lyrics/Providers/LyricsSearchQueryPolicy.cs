@@ -33,31 +33,91 @@ internal static partial class LyricsSearchQueryPolicy
     }
 
     /// <summary>
-    /// 标题搜索词：原写法在前，归一化写法在后，两者相同时只留一个。
-    /// 给「标题和歌手分开传参」的来源逐轮重试用，避免把两种写法混搭成一堆无效组合。
-    /// Title search terms, original spelling first and the normalized one second, deduplicated. Intended for sources that pass
-    /// title and artist as separate parameters and retry round by round instead of mixing both spellings.
+    /// LRCLIB 的标题搜索词。QQ 音乐把译名和假名都写进括号，而 LRCLIB 按标题检索，多一个括号就一条都搜不到，
+    /// 所以只对 QQ 来源额外给一个去掉全部别名的写法，并把原写法留到最后兜底。
+    /// 其它播放器的标题格式不做假设，沿用只去末尾汉字译名的旧规则。
+    /// Title search terms for LRCLIB. QQ Music writes translations and kana readings into brackets, which LRCLIB's title
+    /// search never matches, so QQ-sourced requests also try a fully alias-stripped spelling and keep the original last.
+    /// Other players keep the trailing-translation rule; their formats are not assumed.
     /// </summary>
     internal static IReadOnlyList<string> BuildTitleVariants(LyricsRequest request)
     {
-        var title = WithoutTranslation(request.Title);
-        return new[] { title, LyricsMetadataNormalizer.Normalize(title) }
+        if (!UsesQQMusicTitles(request))
+        {
+            var plain = WithoutTranslation(request.Title);
+            return new[] { plain, LyricsMetadataNormalizer.Normalize(plain) }
+                .Where(value => value.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+        }
+
+        var title = WithoutAliases(request.Title);
+        return new[] { title, LyricsMetadataNormalizer.Normalize(title), request.Title.Trim() }
             .Where(value => value.Length > 0)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
     }
 
+    /// <summary>
+    /// LRCLIB 的歌手搜索词，规则与标题一致：QQ 来源拆分后去掉全部别名并保留原写法，其它来源沿用旧规则。
+    /// Artist search terms for LRCLIB, widened only for QQ Music exactly like the title; other players unchanged.
+    /// </summary>
     internal static IReadOnlyList<string> BuildArtists(LyricsRequest request)
     {
+        var widened = UsesQQMusicTitles(request);
         if (string.IsNullOrWhiteSpace(request.ArtistSeparators))
-            return [WithoutTranslation(request.Artist)];
-        var artists = LyricsArtistPolicy.Split(request).Select(WithoutTranslation).ToArray();
-        return artists.Prepend(string.Join(" ", artists)).Distinct(StringComparer.Ordinal).ToArray();
+        {
+            // 没配分隔符就整串当一个人；QQ 来源额外保留原写法。
+            var single = widened ? WithoutAliases(request.Artist) : WithoutTranslation(request.Artist);
+            return widened
+                ? new[] { single, request.Artist.Trim() }.Where(value => value.Length > 0).Distinct(StringComparer.Ordinal).ToArray()
+                : [single];
+        }
+
+        var artists = LyricsArtistPolicy.Split(request)
+            .Select(value => widened ? WithoutAliases(value) : WithoutTranslation(value))
+            .ToArray();
+        var ordered = artists.Prepend(string.Join(" ", artists));
+        // QQ 来源：拆分后的组合在前，未拆分的原串最后兜底。
+        var candidates = widened ? ordered.Append(request.Artist.Trim()) : ordered;
+        return candidates.Where(value => value.Length > 0).Distinct(StringComparer.Ordinal).ToArray();
     }
+
+    /// <summary>
+    /// QQ 音乐把译名和假名都塞进括号，LRCLIB 按标题检索时一条都搜不到，所以对它把括号当别名去掉。
+    /// 版本描述必须留着，否则会拿原版歌词顶替 Live、Remix 这些确实没有词的版本。
+    /// QQ Music packs translations and kana readings into brackets, which LRCLIB never matches; version markers stay so an
+    /// original-version lyric does not stand in for a Live or Remix release that has none.
+    /// </summary>
+    private static string WithoutAliases(string value)
+    {
+        var cleared = BracketGroup().Replace(value,
+            match => AliasVersionSuffix().IsMatch(match.Value) ? match.Value : string.Empty);
+        return WhitespaceRun().Replace(cleared, " ").Trim();
+    }
+
+    /// <summary>宽规则只对 QQ 音乐生效：译名和假名的括号写法是它的习惯，别的播放器不假设。
+    /// The wider rule applies to QQ Music alone; other players' title formats are not assumed.</summary>
+    private static bool UsesQQMusicTitles(LyricsRequest request) =>
+        LyricsSourcePolicy.IsCurrentPlaybackSource(request.PlaybackSourceId, LyricsSourceCatalog.QQMusic);
 
     [GeneratedRegex(@"\s*[（(][^（）()]*[\p{IsCJKUnifiedIdeographs}][^（）()]*[）)]\s*$")]
     private static partial Regex TranslationSuffix();
 
     [GeneratedRegex("现场|現場|伴奏|翻唱|混音|重制|重製|倍速|live|remix|cover|acoustic|instrumental", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex VersionSuffix();
+
+    [GeneratedRegex(@"[（(][^（）()]*[）)]")]
+    private static partial Regex BracketGroup();
+
+    /// <summary>去掉括号后剩下的连续空格。</summary>
+    [GeneratedRegex(@"[ 　]{2,}")]
+    private static partial Regex WhitespaceRun();
+
+    /// <summary>QQ 来源的版本标记比旧规则多认一些写法：Ver.、TV size、试听、カラオケ等。
+    /// Version markers recognised for QQ-sourced titles, wider than the legacy rule.</summary>
+    [GeneratedRegex(
+        @"现场|現場|伴奏|翻唱|混音|重制|重製|倍速|试听|試聽|カラオケ|\b(?:live|remix|cover|acoustic|instrumental|inst|karaoke|tv\s?size|tvsize|short|demo|remaster|ver|version)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex AliasVersionSuffix();
 }
